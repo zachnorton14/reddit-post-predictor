@@ -6,3 +6,5 @@ matplotlib>=3.10
 numpy
 pandas>=2.2
 pyarrow>=17
+scikit-learn>=1.5
+scipy
