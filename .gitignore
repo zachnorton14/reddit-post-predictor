@@ -1,0 +1,7 @@
+# Downloaded Arctic Shift parquet shards
+data/
+
+.venv/
+.ipynb_checkpoints/
+__pycache__/
+.DS_Store
