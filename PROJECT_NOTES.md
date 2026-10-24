@@ -68,7 +68,7 @@ Findings:
 ### One model per subreddit, and regression targets (2026-10-24)
 
 Direction: no general model. Build the simplest model that works for one subreddit and answers "will this post
-do well?". These runs were scratch experiments, not yet in the repo code.
+do well?". The per-subreddit and loss runs were scratch experiments, not in the repo code.
 
 Logistic regression trained on one subreddit only (TF-IDF + timing + structure + history; C tuned on validation;
 train capped at 300k):
@@ -101,7 +101,40 @@ Targets and losses on dadjokes (same features; regressions tuned on validation S
 | pairwise ranking (logistic on 600k same-quarter pairs) | 0.314 | 0.198 | 0.243 |
 
 Ridge on log engagement finds the top as well as the classifier and ranks all posts better, so it is the proposed
-main model, evaluated on top-10%. The loss is not the bottleneck. `add_labels` now also gives `metric_pct`
+main model, evaluated on top-10%. The loss is not the bottleneck.
+
+### Larger models on dadjokes (2026-10-24)
+
+Code: `dadjokes_models.py` (data, features, models, evaluation); `run_dadjokes_models.py` reproduces the table.
+Target: log engagement. Train 266,053 posts (2011–2023), validation 29,760 (2024), test 32,826 (2025-01..2026-02).
+Settings chosen on validation. Caches (Parquet, embeddings, fine-tune predictions) in `data/models/`.
+
+| Model | Test Spearman | Test PR-AUC | Top-10% hit rate |
+|---|---|---|---|
+| ridge, TF-IDF + metadata (reference) | 0.313 | 0.234 | 0.283 |
+| ridge, TF-IDF only | 0.277 | 0.212 | 0.252 |
+| gradient boosting (sklearn HGB), metadata only | 0.185 | 0.164 | 0.200 |
+| HGB, metadata + out-of-fold TF-IDF ridge (stacked) | 0.306 | 0.230 | 0.275 |
+| ridge, MiniLM embeddings only (frozen, all-MiniLM-L6-v2) | 0.210 | 0.169 | 0.201 |
+| ridge, embeddings + TF-IDF + metadata | 0.338 | 0.240 | 0.281 |
+| HGB, metadata + TF-IDF and embedding ridges (stacked) | 0.322 | 0.237 | 0.281 |
+| **fine-tuned MiniLM, text only** | 0.356 | 0.266 | 0.314 |
+| **blend: fine-tuned MiniLM + HGB metadata** (weights 0.66 / 0.34, fit on validation) | 0.367 | **0.274** | **0.318** |
+| blend: fine-tuned MiniLM + ridge TF-IDF + metadata | 0.374 | 0.272 | 0.312 |
+
+Fine-tuning: all-MiniLM-L6-v2 (22M parameters) with mean pooling and a linear head, squared error on the
+standardized target, AdamW lr 5e-5 with one-cycle schedule, batch 128, max 96 tokens, 3 epochs (~7.5 min each on
+an M3 Max, MPS). Validation Spearman by epoch: 0.340, 0.359, 0.359.
+
+Findings:
+- **Fine-tuning is the first clear gain over linear models** (top-10% hit 0.283 → 0.314 with text only). Frozen
+  embeddings lose to TF-IDF, so embeddings help only when they are trained on the task.
+- Gradient boosting finds little beyond the linear model: no strong weekday × hour interaction.
+- Metadata (timing, structure, history) adds a little on top of the fine-tuned text model (0.314 → 0.318).
+- The best model's top-ranked 10% of posts are successes 32% of the time (3.2× chance); timing alone gives 1.2×.
+
+Next: a larger encoder (for example DeBERTa-v3-base, ~1–1.5 h on the M3 Max), a notebook harness that scores
+a new joke at a chosen posting time, and the score-maturity check for 2023 and later. `add_labels` now also gives `metric_pct`
 (percentile in subreddit-quarter), and `load_data` returns `metric`, `metric_pct`, `score`, `num_comments`.
 
 ---
