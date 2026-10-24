@@ -173,6 +173,7 @@ def add_labels(con, metric="engagement", quantile=0.9, period="quarter", min_pos
     """)
     con.execute("""
     CREATE OR REPLACE VIEW labeled AS
-    SELECT b.*, t.threshold, (b.metric > t.threshold)::INT AS label
+    SELECT b.*, t.threshold, (b.metric > t.threshold)::INT AS label,
+           percent_rank() OVER (PARTITION BY b.subreddit, b.period ORDER BY b.metric) AS metric_pct
     FROM label_base b JOIN thresholds t USING (subreddit, period)
     """)

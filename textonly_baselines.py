@@ -74,14 +74,14 @@ def load_data(cfg):
                  f"WHEN created_at < TIMESTAMP '{cfg.val_end}' THEN 'val' ELSE 'test' END")
     df = con.execute(f"""
     WITH s AS (SELECT *, {split_sql} AS split FROM labeled)
-    SELECT split, label, subreddit, period, created_at,
+    SELECT split, label, metric, metric_pct, score, num_comments, subreddit, period, created_at,
            local_hour, local_dow, local_month,
            title, left(body_clean, {cfg.body_chars})       AS body,
            ln(1 + title_length)                             AS log_title_length,
            title_words,
            ln(1 + body_length)                              AS log_body_length,
            has_body, title_has_question, title_has_number, title_all_caps, body_has_url,
-           has_link_flair, has_author_flair,
+           has_author_flair,
            ln(1 + posts_prev_hour)                          AS log_posts_prev_hour,
            ln(1 + posts_prev_day)                           AS log_posts_prev_day,
            ln(1 + author_prev_posts)                        AS log_author_prev_posts,

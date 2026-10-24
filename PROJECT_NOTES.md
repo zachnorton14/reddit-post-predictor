@@ -65,6 +65,45 @@ Findings:
   Arctic Shift may capture recent posts before their scores settle. If so, validation and test labels mean
   something different from train labels. Check this before the larger models.
 
+### One model per subreddit, and regression targets (2026-10-24)
+
+Direction: no general model. Build the simplest model that works for one subreddit and answers "will this post
+do well?". These runs were scratch experiments, not yet in the repo code.
+
+Logistic regression trained on one subreddit only (TF-IDF + timing + structure + history; C tuned on validation;
+train capped at 300k):
+
+| Subreddit | Test PR-AUC (pooled → own model) | Top-10% hit rate |
+|---|---|---|
+| sysadmin | 0.35 → 0.39 | 42% |
+| dadjokes | 0.22 → 0.24 | 28% |
+| hypotheticalsituation | 0.17 → 0.24 | 27% |
+| AskReddit | 0.18 → 0.20 | 24% |
+| TwoSentenceHorror | 0.17 → 0.20 | 24% |
+| Showerthoughts | 0.13 → 0.15 | 19% |
+| unpopularopinion | 0.12 → 0.13 | 15% |
+
+Chosen subreddit: **dadjokes** (stable median score 7–8 in every year, strongest remaining timing effect, 266k
+training posts). sysadmin scores higher but mostly by topic (rants and outages vs. help questions).
+
+Timing in dadjokes: the 6–9am (New York) lift fell from 1.81× (≤2018) to 1.54× (2019–23) to 1.29× (2024–26).
+Timing alone: 0.118 test PR-AUC. Adding timing to content adds ~0 (0.241 vs. 0.239), also when training only on 2019+.
+
+Targets and losses on dadjokes (same features; regressions tuned on validation Spearman):
+
+| Target and loss | Spearman vs. percentile | PR-AUC (top 10%) | Top-10% hit rate |
+|---|---|---|---|
+| top-10% yes/no, logistic | 0.262 | 0.238 | 0.279 |
+| log engagement, ridge (squared error + L2) | 0.313 | 0.234 | 0.282 |
+| percentile in quarter, ridge | 0.326 | 0.201 | 0.248 |
+| log engagement, Huber (SGD, epsilon 1) | 0.226 | 0.158 | 0.188 |
+| raw score, Poisson (did not converge) | 0.194 | 0.227 | 0.269 |
+| pairwise ranking (logistic on 600k same-quarter pairs) | 0.314 | 0.198 | 0.243 |
+
+Ridge on log engagement finds the top as well as the classifier and ranks all posts better, so it is the proposed
+main model, evaluated on top-10%. The loss is not the bottleneck. `add_labels` now also gives `metric_pct`
+(percentile in subreddit-quarter), and `load_data` returns `metric`, `metric_pct`, `score`, `num_comments`.
+
 ---
 
 Status as of 2026-10-06. This file summarizes the work in `eda.ipynb` and `baselines.ipynb`: what was examined,
