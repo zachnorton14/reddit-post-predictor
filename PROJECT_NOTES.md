@@ -1,5 +1,72 @@
 # Project notes: EDA and baselines (handoff)
 
+## Update 2026-10-23: text-only subreddits, all years
+
+Post type (image vs. text) dominated the first baselines. The project now uses **text posts from seven
+subreddits** so that text and timing carry the signal: AskReddit, Showerthoughts, unpopularopinion, dadjokes,
+hypotheticalsituation, sysadmin, TwoSentenceHorror (`text_subreddits.csv` lists the candidates that were considered).
+
+| File | Purpose |
+|---|---|
+| `extract_subreddits.py` | Streams every Arctic Shift shard (2005-12 to 2026-02, 349 GB), keeps SFW, non-deleted posts of the seven subreddits, writes `data/textonly/data/<subreddit>/<YYYY>/<MM>.parquet`, pushes each finished year to HF `zachnorton03/textonly-subreddit-predictors`. Resumable. |
+| `textonly_data.py` | Shared definitions: `connect()` (views `posts`, table `history`), `add_labels()`, local time (America/New_York), edit-note stripping, megathread flag, chart style. |
+| `textonly_eda.ipynb` | EDA of the extract. Executed on the full extract (24.1M labeled text posts). |
+| `textonly_baselines.py` / `textonly_baselines.ipynb` | Baseline ladder, ablation by feature group, plots. The notebook is a thin harness over the module. |
+
+Decisions:
+- **Label:** engagement above the 90th percentile of the post's **subreddit and quarter** (thresholds drift a lot over the years).
+- **Split:** train before 2024, validation 2024, test 2025-01 to 2026-02. Capped sample per subreddit (AskReddit has ~100× more posts).
+- **Text posts only**; scheduled megathreads (AutoModerator, "Moronic Monday", ...) are dropped: they get many comments automatically.
+- **Edit notes leak the outcome** ("EDIT: thanks for the gold"). Bodies are cut at the first edit marker (`textonly_data.EDIT_RE`).
+  In a run on 2008–2016 data, posts with an edit marker were 2–3× as likely to be successes.
+- **Data gap:** the source has no posts from 2022-09 to 2023-11.
+
+- **Moderator-removed posts** are dropped. Some subreddits flair removed posts ("Removed",
+  "Rule 2 – Removed", "Spam") instead of clearing the body. Since 2024 Showerthoughts flairs ~69% of its posts this
+  way, so 2025 thresholds sat on the removed posts' score of 1. `reddit_data.DELETED_SQL` now checks the flair
+  (112,873 posts dropped; the HF dataset was rewritten).
+- **No link flair feature:** the archived flair is the final one and moderators change it after posting
+  (Showerthoughts flairs unreviewed posts "Pending"). `has_author_flair` is still used.
+
+### Full-extract results (2026-10-24)
+
+Dataset: 24.1M labeled text posts (AskReddit 20.1M, hypotheticalsituation 68k). Train sample 914k (capped at
+150k per subreddit; hypotheticalsituation has only 14k), validation 207k, test 207k. Base rate ~0.10.
+
+| Model | Val PR-AUC | Test PR-AUC | Test ROC-AUC |
+|---|---|---|---|
+| constant | 0.100 | 0.100 | 0.500 |
+| subreddit × weekday × hour rate | 0.113 | 0.108 | 0.520 |
+| naive bayes (text) | 0.149 | 0.154 | 0.628 |
+| logreg (metadata) | 0.124 | 0.125 | 0.565 |
+| logreg (text) | 0.166 | 0.179 | 0.658 |
+| logreg (metadata + text) | 0.186 | 0.193 | 0.678 |
+| MLP, 1 hidden layer (metadata + text) | 0.191 | **0.198** | 0.680 |
+
+Per subreddit (test PR-AUC, best model): sysadmin 0.35–0.37, dadjokes 0.22, AskReddit 0.18, hypotheticalsituation
+0.17, TwoSentenceHorror 0.17, Showerthoughts 0.13, unpopularopinion 0.12.
+
+Findings:
+- **Timing patterns are strong in the data.** Success peaks 6–9am New York time in every subreddit except
+  AskReddit, whose best hours run from about 1am to 7am. The best weekday × hour cells have 1.2× (AskReddit) to 1.8× (dadjokes) the base
+  rate. The worst cells, around midnight to 2am (and Sunday afternoon in AskReddit), have 0.6–0.8×. In AskReddit, hours with fewer posts do better
+  (Spearman −0.95 over the 24 hours).
+- **But timing adds little to the models.** The ablation (logistic regression): subreddit + timing 0.109 test
+  PR-AUC vs. 0.100. Adding timing to content *lowers* test PR-AUC (0.202 → 0.191, mostly sysadmin 0.368 → 0.341)
+  while validation ROC-AUC rises a little. Timing effects are a few hours wide and multiplicative, so a linear
+  model with one-hot hours may not use them well: a tree model with interactions is the next test.
+- **Text carries most of the signal** (+text: 0.196 test). The MLP is the first model to beat logistic regression
+  (0.198 vs. 0.193), so more capacity helps a little. sysadmin text is strongly predictive (rants, outages,
+  ransomware, "your username" threads do well; tech-support questions do poorly).
+- **Reposted titles** (`is_repost`, the largest metadata coefficient, +0.71) and author flair (+0.45) do better.
+  Not explained yet.
+- **Possible score-maturity shift:** median score drops to 1 from 2023 on in AskReddit, Showerthoughts and
+  unpopularopinion (unpopularopinion: 10 in 2022, 1 in 2024), while median comments rise in some subreddits.
+  Arctic Shift may capture recent posts before their scores settle. If so, validation and test labels mean
+  something different from train labels. Check this before the larger models.
+
+---
+
 Status as of 2026-10-06. This file summarizes the work in `eda.ipynb` and `baselines.ipynb`: what was examined,
 what was found, what was decided, and what was built and tested. All numbers come from executed runs of the
 notebooks. The notebooks in the repo contain those outputs.

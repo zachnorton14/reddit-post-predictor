@@ -12,12 +12,17 @@ from huggingface_hub import HfApi, snapshot_download
 
 REPO = "open-index/arctic"
 
-# Exclusion rules: NSFW posts, and deleted/removed posts (Reddit clears their author, body, and URL)
+# Exclusion rules: NSFW posts, and deleted/removed posts (Reddit clears their author, body, and URL).
+# Some subreddits mark removed posts with a flair ("Removed", "Rule 2 – Removed", "Spam") instead,
+# and title-only posts have no body to clear, so the flair is also checked.
 NSFW_SQL = "coalesce(over_18, false)"
-DELETED_SQL = """(
+DELETED_SQL = r"""(
     author = '[deleted]'
     OR coalesce(selftext, '') IN ('[deleted]', '[removed]')
     OR title IN ('[deleted by user]', '[ Removed by moderator ]')
+    OR (regexp_matches(lower(coalesce(link_flair_text, '')), '\bremov(ed|al)\b')
+        AND NOT contains(lower(link_flair_text), 'not removed'))
+    OR lower(coalesce(link_flair_text, '')) IN ('user deleted', 'spam')
 )"""
 
 POST_TYPE_SQL = """

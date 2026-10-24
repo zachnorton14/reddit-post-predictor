@@ -115,7 +115,8 @@ Subreddits: {", ".join(SUBREDDITS)}.
 
 Layout: `data/<subreddit>/<YYYY>/<MM>.parquet`, rows sorted by `created_utc`. Columns are unchanged from the
 source. NSFW posts (`over_18`) and deleted/removed posts are excluded: author `[deleted]`, selftext `[deleted]` or
-`[removed]`, or title `[deleted by user]` or `[ Removed by moderator ]`. `score` and `num_comments` are the
+`[removed]`, title `[deleted by user]` or `[ Removed by moderator ]`, or a moderator flair that marks the post
+removed ("Removed", "Rule 2 – Removed", "User Deleted", "Spam"). `score` and `num_comments` are the
 values at archival time.
 
 The source has no submissions for 2022-09 through 2023-11, so this dataset has the same gap.
