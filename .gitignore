@@ -5,3 +5,6 @@ data/
 .ipynb_checkpoints/
 __pycache__/
 .DS_Store
+
+# Secrets (HF_TOKEN)
+.env

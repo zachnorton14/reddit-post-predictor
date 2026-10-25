@@ -29,7 +29,8 @@ GAP_START, GAP_END = "2022-09-01", "2023-12-01"
 BLUE, ORANGE, AQUA, YELLOW, MAGENTA, GREEN, VIOLET = (
     "#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6")
 INK, MUTED = "#0b0b0b", "#52514e"
-COLORS = dict(zip(SUBREDDITS, [BLUE, ORANGE, AQUA, YELLOW, MAGENTA, GREEN, VIOLET]))
+COLORS = dict(zip(SUBREDDITS, [BLUE, ORANGE, AQUA, YELLOW, MAGENTA, GREEN, VIOLET,
+                              "#8a5a00", "#0a8a9a", "#b8327a", "#5a6b7a"]))
 
 METRICS = {
     "score": "ln(1 + greatest(score, 0))",
