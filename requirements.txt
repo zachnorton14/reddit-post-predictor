@@ -8,3 +8,6 @@ pandas>=2.2
 pyarrow>=17
 scikit-learn>=1.5
 scipy
+sentence-transformers>=6.2
+torch>=2.14
+transformers>=5.20
