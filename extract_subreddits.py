@@ -8,6 +8,7 @@ Usage:
     python extract_subreddits.py --months 2025-12          # one month, for a test
     python extract_subreddits.py --push                    # all months, push to HF after each year
     python extract_subreddits.py --push-only               # upload what is already extracted
+    python extract_subreddits.py --subreddits wallstreetbets LocalLLaMA --push   # add subreddits to the dataset
 """
 
 import argparse
@@ -29,13 +30,22 @@ TARGET_REPO = "zachnorton03/textonly-subreddit-predictors"
 SUBREDDITS = [
     "AskReddit", "Showerthoughts", "unpopularopinion", "dadjokes",
     "hypotheticalsituation", "sysadmin", "TwoSentenceHorror",
+    # Added 2026-10-24. Mostly link and image posts; add_labels(self_only=True) keeps their text posts.
+    "wallstreetbets", "singularity", "artificial", "LocalLLaMA",
 ]
 OUT_DIR = Path("data/textonly")
 TMP_DIR = Path("data/_tmp_shards")
+# Set by main(): the subreddits of this run, and the file of months finished for them
+CANONICAL = {s.lower(): s for s in SUBREDDITS}
 DONE_FILE = OUT_DIR / ".done_months"
 
-CANONICAL = {s.lower(): s for s in SUBREDDITS}
-SUB_LIST_SQL = ", ".join(f"'{s}'" for s in CANONICAL)
+
+def done_file(subreddits):
+    """Months are tracked per set of subreddits, so a run for new subreddits does not skip their months."""
+    # .done_months predates the added subreddits and covers the first seven
+    if set(subreddits) == set(SUBREDDITS[:7]):
+        return OUT_DIR / ".done_months"
+    return OUT_DIR / f".done_months_{'_'.join(sorted(subreddits))}"
 
 
 def list_shards():
@@ -62,8 +72,9 @@ def filter_shard(shard):
             time.sleep(10 * (attempt + 1))
     try:
         con = duckdb.connect()
+        sub_list = ", ".join(f"'{s}'" for s in CANONICAL)
         return con.execute(
-            f"SELECT * FROM read_parquet('{local}') WHERE lower(subreddit) IN ({SUB_LIST_SQL})"
+            f"SELECT * FROM read_parquet('{local}') WHERE lower(subreddit) IN ({sub_list})"
             f" AND NOT {NSFW_SQL} AND NOT {DELETED_SQL}"
         ).to_arrow_table()
     finally:
@@ -95,7 +106,7 @@ def extract_month(month, shards, workers):
 
 def write_readme():
     configs = "\n".join(
-        f"- config_name: {s}\n  data_files: data/{s}/*/*.parquet" for s in SUBREDDITS
+        f"- config_name: {s}\n  data_files: data/{s}/*/*.parquet" for s in CANONICAL.values()
     )
     (OUT_DIR / "README.md").write_text(f"""---
 configs:
@@ -107,11 +118,11 @@ configs:
 
 # Text-only subreddit submissions
 
-All submissions from {len(SUBREDDITS)} text-focused subreddits, extracted from the Arctic Shift Reddit dumps
+All submissions from {len(CANONICAL)} subreddits, extracted from the Arctic Shift Reddit dumps
 in [`{SOURCE_REPO}`](https://huggingface.co/datasets/{SOURCE_REPO}). Used for the CSC422 project
 "Predicting Social Media Post Success".
 
-Subreddits: {", ".join(SUBREDDITS)}.
+Subreddits: {", ".join(CANONICAL.values())}.
 
 Layout: `data/<subreddit>/<YYYY>/<MM>.parquet`, rows sorted by `created_utc`. Columns are unchanged from the
 source. NSFW posts (`over_18`) and deleted/removed posts are excluded: author `[deleted]`, selftext `[deleted]` or
@@ -123,13 +134,17 @@ The source has no submissions for 2022-09 through 2023-11, so this dataset has t
 """)
 
 
-def push(year=None):
-    """Upload the README and the extracted files of one year (or all years) in one commit."""
+def push(year=None, repo=TARGET_REPO):
+    """Upload the README and the extracted files of one year (or all years) in one commit.
+
+    Only the subreddits of this run are uploaded, and only their remote files can be deleted, so a run for new
+    subreddits leaves the others on HF alone.
+    """
     write_readme()
-    files = f"data/*/{year}/*.parquet" if year else "data/*/*/*.parquet"
+    files = [f"data/{s}/{year or '*'}/*.parquet" for s in CANONICAL.values()]
     HfApi().upload_folder(
-        repo_id=TARGET_REPO, repo_type="dataset", folder_path=OUT_DIR,
-        allow_patterns=["README.md", files], delete_patterns=[files],
+        repo_id=repo, repo_type="dataset", folder_path=OUT_DIR,
+        allow_patterns=["README.md", *files], delete_patterns=files,
         commit_message=f"Add {year or 'all years'}",
     )
 
@@ -140,11 +155,17 @@ def main():
     parser.add_argument("--workers", type=int, default=8, help="parallel shard downloads")
     parser.add_argument("--push", action="store_true", help="upload to HF after each finished year")
     parser.add_argument("--push-only", action="store_true", help="only upload what is already extracted")
+    parser.add_argument("--repo", default=TARGET_REPO, help="HF dataset to push to")
+    parser.add_argument("--subreddits", nargs="*", choices=SUBREDDITS, help="subreddits to extract (default: all)")
     args = parser.parse_args()
+
+    global CANONICAL, DONE_FILE
+    CANONICAL = {s.lower(): s for s in args.subreddits or SUBREDDITS}
+    DONE_FILE = done_file(CANONICAL.values())
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     if args.push_only:
-        push()
+        push(repo=args.repo)
         return
 
     all_months = list_shards()
@@ -157,7 +178,7 @@ def main():
         extract_month(month, all_months[month], args.workers)
         year_finished = i + 1 == len(todo) or todo[i + 1][:4] != month[:4]
         if args.push and year_finished:
-            push(month[:4])
+            push(month[:4], args.repo)
 
 
 if __name__ == "__main__":

@@ -137,6 +137,33 @@ Next: a larger encoder (for example DeBERTa-v3-base, ~1–1.5 h on the M3 Max), 
 a new joke at a chosen posting time, and the score-maturity check for 2023 and later. `add_labels` now also gives `metric_pct`
 (percentile in subreddit-quarter), and `load_data` returns `metric`, `metric_pct`, `score`, `num_comments`.
 
+### d1 zero-shot on dadjokes (2026-10-24)
+
+`run_d1_zero_shot.py` scores the 32,826 dadjokes test posts with Liquid AI's d1 decision model
+(`LiquidAI/d1-omni-600M`, 587M parameters, no fine-tuning). d1 returns P(yes) for a yes/no question about a text;
+that probability is the ranking score. Same test set and metrics as the table above. ~40 min on an M1 Max (MPS, fp16).
+
+| Question | Test Spearman | Test PR-AUC (95% bootstrap CI) | Top-10% hit rate |
+|---|---|---|---|
+| "This is a post on r/dadjokes. Will it be in the top 10% of posts by upvotes and comments?" | 0.043 | 0.121 (0.115–0.128) | 0.134 |
+| "Is this joke funny?" | 0.007 | 0.106 (0.102–0.113) | 0.113 |
+| constant (base rate) | – | 0.100 | 0.100 |
+
+- **Zero-shot d1 is close to chance** and far below TF-IDF ridge (0.234) and the fine-tuned MiniLM (0.266). A general
+  model's sense of "funny" or "will do well" does not match what this community rewards; the top-10% question is a
+  little better than "funny" (the two scores correlate 0.57).
+- Fine-tuning d1 would test whether a 25× larger encoder helps, but the fine-tuned MiniLM shows that training on the
+  task is what matters. Not tried: ~5–7 h per epoch on this machine.
+
+### Four more subreddits (2026-10-24)
+
+`extract_subreddits.py --subreddits wallstreetbets singularity artificial LocalLLaMA --repo jbduran/textonly-subreddit-predictors --push`
+extracts r/wallstreetbets, r/singularity, r/artificial and r/LocalLLaMA with the same filters into the HF dataset
+`jbduran/textonly-subreddit-predictors` (separate from the original seven). Months are tracked per set of subreddits
+(`.done_months_<subreddits>`), and a push uploads and deletes only the run's subreddits. These subreddits are
+mostly link and image posts; the labels keep their text posts. LocalLLaMA was created in 2023-03, inside the data
+gap, so it has posts only from 2023-12 on and needs a later train/validation/test split.
+
 ---
 
 Status as of 2026-10-06. This file summarizes the work in `eda.ipynb` and `baselines.ipynb`: what was examined,

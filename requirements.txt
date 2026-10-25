@@ -11,3 +11,6 @@ scipy
 sentence-transformers>=6.2
 torch>=2.14
 transformers>=5.20
+pillow
+soundfile
+torchvision
