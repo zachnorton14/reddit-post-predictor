@@ -1,5 +1,19 @@
 # Project notes: EDA and baselines (handoff)
 
+## Update 2026-10-24: random forest and gradient boosting
+
+`textonly_baselines.run_tree_models(data, feats, res)` and notebook section 5 add random forest and histogram
+gradient boosting to the pooled and per-subreddit comparison. Both use metadata only (no TF-IDF), with the
+same samples, labels, and chronological splits as metadata logistic regression.
+
+- **Defaults:** forest: 300 trees, depth 20; boosting: 200 iterations, learning rate 0.05, 31 leaves, L2 = 1.
+  Both use minimum leaf size 50 and the configured seed. Tune `rf_params` / `gb_params` on validation.
+- **Time split:** boosting disables automatic early stopping to avoid a random internal validation split.
+- **Status:** full-extract benchmark and graphs complete. Test PR-AUC: forest 0.138, boosting 0.143,
+  metadata logistic regression 0.125. The notebook includes all nine models; `MODEL_LOG.md` records the
+  current results and earlier experiments. Two passing tests cover all seven subreddits and held-out outcome
+  isolation. Run: `python -m unittest discover -s tests -v`.
+
 ## Update 2026-10-23: text-only subreddits, all years
 
 Post type (image vs. text) dominated the first baselines. The project now uses **text posts from seven
@@ -28,7 +42,10 @@ Decisions:
 - **No link flair feature:** the archived flair is the final one and moderators change it after posting
   (Showerthoughts flairs unreviewed posts "Pending"). `has_author_flair` is still used.
 
-### Full-extract results (2026-10-24)
+### Initial full-extract results (2026-10-24)
+
+These are the earlier run's results. The refreshed nine-model comparison and exact sample counts are in
+`MODEL_LOG.md` and the executed `textonly_baselines.ipynb`.
 
 Dataset: 24.1M labeled text posts (AskReddit 20.1M, hypotheticalsituation 68k). Train sample 914k (capped at
 150k per subreddit; hypotheticalsituation has only 14k), validation 207k, test 207k. Base rate ~0.10.

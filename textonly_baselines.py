@@ -9,6 +9,7 @@ Typical use:
     feats = build_features(data)
     res = Results(data)
     run_ladder(data, feats, res)
+    run_tree_models(data, feats, res)
     run_ablation(data, feats)
 """
 
@@ -21,6 +22,7 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score, log_loss, precision_recall_curve, roc_auc_score
@@ -307,6 +309,40 @@ def fit_mlp(X, y, y_val, units=64, max_epochs=8, patience=2, seed=42):
             if bad >= patience:
                 break
     return best, pd.DataFrame(history), time.time() - t0
+
+
+def run_tree_models(data, feats, res, rf_params=None, gb_params=None):
+    """Fit random forest and histogram gradient boosting on the metadata groups.
+
+    Uses the same sampled posts and metadata as the logistic-regression baseline, with pooled and
+    per-subreddit evaluation in `res`. Text is deliberately excluded: only the small metadata matrix is
+    made dense for histogram boosting. Works with build_features(data, text=False).
+
+    Defaults limit tree size and fix the random seed. Boosting uses a fixed number of iterations rather
+    than a random internal validation split; choose parameters using the existing chronological
+    validation set, never the test set. `rf_params` / `gb_params` override the estimator defaults below.
+    Returns fitted models keyed by `rf_meta` and `gb_meta`.
+    """
+    X = {s: feats.combine(META, s).toarray() for s in SPLITS}
+    y = data.y("train")
+    rf_options = dict(n_estimators=300, max_depth=20, min_samples_leaf=50,
+                      n_jobs=-1, random_state=data.cfg.seed)
+    gb_options = dict(max_iter=200, learning_rate=0.05, max_leaf_nodes=31,
+                      min_samples_leaf=50, l2_regularization=1.0,
+                      early_stopping=False, random_state=data.cfg.seed)
+    rf_options.update(rf_params or {})
+    gb_options.update(gb_params or {})
+    models = {}
+    for key, name, model in [
+        ("rf_meta", "7 random forest (metadata)", RandomForestClassifier(**rf_options)),
+        ("gb_meta", "8 gradient boosting (metadata)", HistGradientBoostingClassifier(**gb_options)),
+    ]:
+        model, secs = fit_timed(model, X["train"], y)
+        res.evaluate(name, model.predict_proba(X["val"])[:, 1],
+                     model.predict_proba(X["test"])[:, 1], secs)
+        models[key] = model
+        print(f"{name}: fit in {secs:.1f}s")
+    return models
 
 
 ABLATION_SETS = {
