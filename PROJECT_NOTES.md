@@ -181,6 +181,24 @@ extracts r/wallstreetbets, r/singularity, r/artificial and r/LocalLLaMA with the
 mostly link and image posts; the labels keep their text posts. LocalLLaMA was created in 2023-03, inside the data
 gap, so it has posts only from 2023-12 on and needs a later train/validation/test split.
 
+Extract finished 2026-10-25 (all posts / approximate text posts): wallstreetbets 939k / 230k, singularity 74k / 24k,
+LocalLLaMA 67k / 50k, artificial 55k / 17k.
+
+Baselines from `dadjokes_models.py` (`run_new_subreddits.py`; labeled text posts, default splits; LocalLLaMA: train
+before 2025, validation 2025-01..06, test 2025-07..2026-02). Base rate 0.10 everywhere.
+
+| Subreddit | Train posts | Test PR-AUC: ridge (TF-IDF + meta) | HGB (meta only) | Top-10% hit (ridge) |
+|---|---|---|---|---|
+| LocalLLaMA | 19,802 | **0.315** | 0.200 | 0.344 |
+| wallstreetbets | 162,563 | 0.215 | **0.221** | 0.249 |
+| artificial | 9,839 | 0.159 | 0.137 | 0.210 |
+| singularity | 3,955 | 0.155 | 0.122 | 0.184 |
+
+- **LocalLLaMA has the strongest text signal measured so far** (ridge 0.315 vs. 0.234 on dadjokes, with 13× less
+  training data). Its whole history is 2023-12 on, so the possible score-maturity shift (see above) needs checking first.
+- **wallstreetbets is the only subreddit where metadata alone beats text**; not investigated yet.
+- singularity and artificial have few labeled text posts (quarters with < 100 text posts are dropped) and weak signal.
+
 ---
 
 Status as of 2026-10-06. This file summarizes the work in `eda.ipynb` and `baselines.ipynb`: what was examined,
