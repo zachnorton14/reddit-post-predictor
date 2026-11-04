@@ -1,4 +1,4 @@
-"""Reproduce the dadjokes model comparison in PROJECT_NOTES.md. Caches go to data/models/.
+"""Reproduce the dadjokes model comparison in PROJECT_NOTES.md. Caches and predictions go to data/models/.
 
     python run_dadjokes_models.py            # all models (fine-tuning takes ~25 min on an M3 Max)
     python run_dadjokes_models.py --no-finetune
@@ -50,6 +50,8 @@ def main():
             res.add("blend: " + " + ".join(combo), m.predict(V), m.predict(T))
 
     print(res.table().to_string())
+    # results.ipynb reads these
+    pickle.dump(res.preds, open(dm.CACHE_DIR / "predictions.pkl", "wb"))
 
 
 if __name__ == "__main__":

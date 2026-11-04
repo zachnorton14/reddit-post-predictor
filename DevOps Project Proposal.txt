@@ -1,0 +1,28 @@
+﻿Team members:
+Jonathan Duran-Ortiz jbduran
+Zach Norton zanorton
+Cooper Sizemore cgsizem3
+Our proposed pipeline:
+1. When an update is made to the model through a push to the GitHub repository or to the dataset through a push to the HuggingFace repository, this will trigger one of two GitHub Action workflows that either (1) lint and test the model code via Ruff and pytest, or (2) checks dataset columns, missing values, chronological splits, and potential label leakage. Which action is taken is decided by which change is made.
+2. We now prepare to train the model. A separate job in the workflow will take the following steps: 
+   1. If the model training code, or requirements are changed, a new Docker image needs to be built representing the reproducible training environment 
+   2. We use WolfCTL to provision a VCL instance with a RTX 2080 ti GPU
+   3. Ansible configures the VCL instance and deploys the training image to it
+   4. Model training is executed.
+3. After training, a subsequent job on the same VCL instance will evaluate the performance of the model by running the evaluation script (PR-AUC, top-10% hit rate) on a held-out test set
+4. If the new model’s performance regresses beyond our configured tolerance, Actions will reject the merge to release. If the performance passes our quality thresholds, then push to release
+5. A new CD workflow is run from the release branch to deploy the model which will:
+   1. Build a new “inference” container (should save space)
+   2. Ansible deploys the image to production
+   3. Runs the serve script
+6. Finally, record model results by storing the model version, Git commit, dataset version, and evaluation metrics in a record file.
+Areas of Depth:
+* Jonathan: Automate the training pipeline using GitHub Actions, Docker, WolfCTL, and Ansible
+* Configure code and dataset triggers, run linting and data validation, build reproducible training images, provision the GPU VCL instance, and record model versions and evaluation results.
+* Zach: Complex testing environment: Training and evaluating a model within a VCL instance
+   * Run integration tests, benchmark inference latency, validate model artifacts, compare candidate performance against production, and simulate A/B traffic before promotion.
+* Cooper: Manage deployments to live production inference instance using Kubernetes
+   * The pipeline described above trains, evaluates, and deploys the model as a dev release on one VCL instance. In a real production system, we would have a live deployment of the model on a production server. My area of depth will simulate this by using an extension of our CI/CD pipeline to deploy production-ready models to a Kubernetes cluster that will act as our production deployment.
+
+
+Diagram:
