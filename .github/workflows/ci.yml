@@ -20,4 +20,4 @@ jobs:
           cache-dependency-path: requirements-ci.txt
       - run: pip install -r requirements-ci.txt
       - run: ruff check --output-format github .
-      - run: pytest -q tests
+      - run: python -m pytest -q tests
