@@ -1,0 +1,23 @@
+# Code changes: lint and test
+name: Code CI
+
+on:
+  push:
+    branches: [main]
+    paths: &code ["**.py", "requirements*.txt", "ruff.toml", ".github/workflows/ci.yml"]
+  pull_request:
+    paths: *code
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+      - run: pip install -r requirements-ci.txt
+      - run: ruff check --output-format github .
+      - run: pytest -q tests

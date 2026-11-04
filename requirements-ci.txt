@@ -1,0 +1,13 @@
+# What lint, tests and dataset validation need (no torch / transformers)
+duckdb>=1.1
+huggingface_hub>=0.25
+matplotlib>=3.10
+numpy
+pandas>=2.2
+pyarrow>=17
+scikit-learn>=1.5
+scipy
+fastapi
+httpx
+pytest
+ruff

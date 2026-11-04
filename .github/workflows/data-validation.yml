@@ -1,0 +1,49 @@
+# Dataset changes: validate columns, missing values, chronological splits and label leakage.
+# A push to the Hugging Face dataset reaches this through webhook_relay/ as a repository_dispatch event.
+name: Dataset validation
+
+on:
+  repository_dispatch:
+    types: [hf-dataset-updated]
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: Hugging Face dataset repo
+        default: jbduran/textonly-subreddit-predictors
+      revision:
+        description: Commit to check (default latest)
+        required: false
+  push:
+    branches: [main]
+    paths: &validation ["validate_dataset.py", "textonly_data.py", "textonly_baselines.py", "reddit_data.py",
+                        "extract_subreddits.py", "requirements-ci.txt", ".github/workflows/data-validation.yml"]
+  pull_request:
+    paths: *validation
+
+env:
+  REPO: ${{ github.event.client_payload.repo || inputs.repo || 'jbduran/textonly-subreddit-predictors' }}
+  REVISION: ${{ github.event.client_payload.revision || inputs.revision }}
+
+concurrency:
+  group: data-validation-${{ github.event.client_payload.repo || inputs.repo || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+      - run: pip install -r requirements-ci.txt
+      - name: Validate ${{ env.REPO }}
+        run: |
+          set -o pipefail
+          python validate_dataset.py --repo "$REPO" ${REVISION:+--revision "$REVISION"} | tee report.txt
+      - name: Job summary
+        if: always()
+        run: |
+          { echo "### Dataset validation: \`$REPO\` ${REVISION:+@ $REVISION}"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
