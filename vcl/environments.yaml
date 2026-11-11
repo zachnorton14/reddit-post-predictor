@@ -19,10 +19,7 @@ environments:
   gpu-eval:
     description: GPU instance for evaluation on the held-out test set
     image: "Ubuntu 22 GPU with Cuda (GeForce RTX 2080 Ti)"
+    length_minutes: 120
     wait_timeout_minutes: 30
 
-  cpu-dev:
-    description: General-purpose Ubuntu box for smoke tests
-    image: ""   # TODO: replace with the exact image name/id
-    length_minutes: 120
-    wait_timeout_minutes: 20
+  # Add a CPU profile (for smoke tests) once its image name is known; the loader rejects an empty image.
