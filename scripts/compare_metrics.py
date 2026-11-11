@@ -1,9 +1,9 @@
-"""Release gate: fail if the candidate model regresses beyond tolerance against the production model.
+"""Model gate: fail if the candidate model regresses beyond tolerance against the production model.
 
     python scripts/compare_metrics.py candidate/metrics.json production/metrics.json
 
 Both files are JSON objects with at least the keys in GATED. A missing production file (no model has been
-released yet) passes. Exit status 1 blocks the merge into `release`.
+released yet) passes. Exit status 1 blocks the merge into `dev`.
 """
 
 import json

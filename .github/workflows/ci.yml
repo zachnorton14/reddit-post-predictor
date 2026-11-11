@@ -1,12 +1,11 @@
-# Code changes: lint and test
+# Lint and test every pull request into `dev`.
+# No path filter: this is a required check on `dev`, and a required check that a filter skips blocks the merge.
 name: Code CI
 
 on:
-  push:
-    branches: [main]
-    paths: &code ["**.py", "requirements*.txt", "ruff.toml", ".github/workflows/ci.yml"]
   pull_request:
-    paths: *code
+    branches: [dev]
+  workflow_dispatch:
 
 jobs:
   lint-test:
