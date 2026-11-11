@@ -1,5 +1,7 @@
-# Train and evaluate a candidate model on a VCL GPU instance for every pull request into `release`.
-# The `gate` job is a required status check on `release`: a candidate that regresses cannot be merged.
+# Train and evaluate a candidate model on a VCL GPU instance for every pull request into `dev`.
+# The `gate` job is a required status check on `dev`: a candidate that regresses cannot be merged.
+# No path filter, for the same reason (a required check that a filter skips blocks the merge).
+# deploy-staging.yml later deploys the `candidate` artifact of the newest gated pull request when dev reaches `release`.
 #
 #   image (hosted) ──► train-eval (self-hosted controller) ──► gate (hosted)
 #
@@ -11,7 +13,7 @@ name: train-eval
 
 on:
   pull_request:
-    branches: [release]
+    branches: [dev]
   workflow_dispatch:
 
 permissions:

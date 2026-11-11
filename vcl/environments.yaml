@@ -23,3 +23,12 @@ environments:
     wait_timeout_minutes: 30
 
   # Add a CPU profile (for smoke tests) once its image name is known; the loader rejects an empty image.
+
+  # Staging (dev release) inference instance, reserved by deploy-staging.yml on every push to `release`.
+  # Uncomment once the image name is known (`python -m vcl images --search ubuntu`); until then that workflow
+  # fails at "Reserve the staging instance".
+  # serve-staging:
+  #   description: CPU instance serving the gated model as the dev release
+  #   image: "<Ubuntu 22.04 image name>"
+  #   length_minutes: 1440
+  #   wait_timeout_minutes: 20
