@@ -8,7 +8,6 @@ used as a ranking score and evaluated like the models in dadjokes_models.py.
 
 import time
 
-import numpy as np
 import pandas as pd
 import torch
 from transformers import AutoModel
