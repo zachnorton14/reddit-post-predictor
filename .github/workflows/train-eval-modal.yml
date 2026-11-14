@@ -1,0 +1,78 @@
+# Fallback for train-eval.yml: train and evaluate on a Modal GPU instead of VCL. Manual only.
+# It produces the same `candidate` artifact and runs the same gate. It is not a required check on
+# `release`, so a pull request still needs a passing `train-eval / gate` from the VCL workflow.
+name: train-eval-modal
+
+on:
+  workflow_dispatch:
+    inputs:
+      gpu:
+        description: Modal GPU type
+        type: choice
+        options: [L40S, T4, L4, A10, A100-80GB, H100]
+        default: L40S
+
+permissions:
+  contents: read
+
+env:
+  DATASET: zachnorton03/textonly-subreddit-predictors
+
+jobs:
+  train-eval:
+    runs-on: ubuntu-latest
+    environment: modal
+    timeout-minutes: 660
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "modal>=1.0,<2" "huggingface_hub>=0.25"
+
+      - name: Pin the dataset revision for this run
+        id: data
+        run: |
+          rev=$(python -c "from huggingface_hub import HfApi; print(HfApi().dataset_info('$DATASET').sha)")
+          echo "revision=$rev" >> "$GITHUB_OUTPUT"
+
+      - name: Train and evaluate on Modal
+        run: |
+          modal run infra/modal/train.py --dataset "$DATASET" --revision "${{ steps.data.outputs.revision }}" \
+            --out artifacts --gpu "${{ inputs.gpu }}"
+
+      - name: Record what produced this model
+        run: |
+          cat > artifacts/run.json <<EOF
+          {"commit": "${{ github.sha }}", "dataset": "$DATASET",
+           "dataset_revision": "${{ steps.data.outputs.revision }}",
+           "provider": "modal", "gpu": "${{ inputs.gpu }}", "run_id": ${{ github.run_id }}}
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate
+          path: artifacts/
+          retention-days: 90
+
+  gate:
+    needs: train-eval
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate
+          path: candidate
+      - name: Fetch the production model's metrics (latest model release)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag=$(gh release list --json tagName --jq '[.[] | select(.tagName | startswith("model-"))][0].tagName // empty')
+          if [ -n "$tag" ]; then gh release download "$tag" --pattern metrics.json --dir production; fi
+      - name: Compare candidate against production
+        run: python3 scripts/compare_metrics.py candidate/metrics.json production/metrics.json

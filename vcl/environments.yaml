@@ -16,6 +16,13 @@ environments:
     length_minutes: 240
     wait_timeout_minutes: 30
 
+  gpu-train-large:
+    description: GPU instance (NVIDIA L40S, 48 GB, 90 GB RAM, 16 cores) for large models
+    # VCL has only 2 L40S GPUs, so a reservation may wait. The image allows 24 h; student accounts cap at 10 h.
+    image: "Ubuntu 24 GPU with Cuda (NVIDIA L40S)"
+    length_minutes: 600
+    wait_timeout_minutes: 30
+
   gpu-eval:
     description: GPU instance for evaluation on the held-out test set
     image: "Ubuntu 22 GPU with Cuda (GeForce RTX 2080 Ti)"

@@ -1,0 +1,137 @@
+# Train and evaluate a candidate model on a VCL GPU instance, then copy the results to the controller.
+#
+# Run by .github/workflows/train-eval.yml against the inventory that `python -m vcl up` writes (group `vcl`).
+# Extra vars: image, dataset, revision, artifacts_dir. Environment: GHCR_USER, GHCR_TOKEN, HF_TOKEN.
+# Uses only ansible-core modules. Works on the Ubuntu 22 (RTX 2080 Ti) and Ubuntu 24 (L40S) GPU images,
+# which come with the NVIDIA driver and CUDA but not Docker. `--tags setup` runs only the Docker and NVIDIA setup.
+- name: Train and evaluate on the GPU instance
+  hosts: vcl
+  become: true
+  vars:
+    workdir: /opt/train
+    nvidia_keyring: /etc/apt/keyrings/nvidia-container-toolkit.asc
+  tasks:
+    - name: Check that the NVIDIA driver sees the GPU
+      tags: [setup]
+      ansible.builtin.command: nvidia-smi
+      changed_when: false
+
+    - name: Check whether Docker is installed
+      tags: [setup]
+      ansible.builtin.command: docker --version
+      register: docker_version
+      changed_when: false
+      failed_when: false
+
+    - name: Install Docker
+      tags: [setup]
+      ansible.builtin.apt:
+        name: docker.io
+        state: present
+        update_cache: true
+      when: docker_version.rc != 0
+
+    - name: Add the NVIDIA container toolkit apt key
+      tags: [setup]
+      ansible.builtin.get_url:
+        url: https://nvidia.github.io/libnvidia-container/gpgkey
+        dest: "{{ nvidia_keyring }}"
+        mode: "0644"
+
+    - name: Add the NVIDIA container toolkit apt repository
+      tags: [setup]
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/nvidia-container-toolkit.list
+        content: "deb [signed-by={{ nvidia_keyring }}] https://nvidia.github.io/libnvidia-container/stable/deb/$(ARCH) /\n"
+        mode: "0644"
+
+    - name: Install the NVIDIA container toolkit
+      tags: [setup]
+      ansible.builtin.apt:
+        name: nvidia-container-toolkit
+        state: present
+        update_cache: true
+
+    - name: Point Docker at the NVIDIA runtime
+      tags: [setup]
+      ansible.builtin.command: nvidia-ctk runtime configure --runtime=docker
+      register: ctk
+      changed_when: "'Wrote updated config' in ctk.stdout"
+
+    - name: Restart Docker
+      tags: [setup]
+      ansible.builtin.systemd:
+        name: docker
+        state: restarted
+        enabled: true
+
+    - name: Train, evaluate and package the results
+      block:
+        - name: Log in to GHCR
+          ansible.builtin.command:
+            cmd: docker login ghcr.io -u {{ lookup('env', 'GHCR_USER') }} --password-stdin
+            stdin: "{{ lookup('env', 'GHCR_TOKEN') }}"
+          no_log: true
+          changed_when: false
+
+        - name: Pull the training image
+          ansible.builtin.command: docker pull {{ image }}
+          changed_when: true
+
+        - name: Check that a container can see the GPU
+          ansible.builtin.command: docker run --rm --gpus all {{ image }} nvidia-smi
+          changed_when: false
+
+        - name: Create a clean output directory
+          ansible.builtin.file:
+            path: "{{ workdir }}/out"
+            state: "{{ item }}"
+            mode: "0755"
+          loop: [absent, directory]
+
+        - name: Train
+          ansible.builtin.command: >-
+            docker run --rm --gpus all --shm-size 8g -e HF_TOKEN -v {{ workdir }}/out:/out {{ image }}
+            python -m pipeline.train --dataset {{ dataset }} --revision {{ revision }} --out /out/model
+          environment:
+            HF_TOKEN: "{{ lookup('env', 'HF_TOKEN') }}"
+          changed_when: true
+
+        - name: Evaluate
+          ansible.builtin.command: >-
+            docker run --rm --gpus all -e HF_TOKEN -v {{ workdir }}/out:/out {{ image }}
+            python -m pipeline.evaluate --model /out/model --out /out/metrics.json
+          environment:
+            HF_TOKEN: "{{ lookup('env', 'HF_TOKEN') }}"
+          changed_when: true
+
+        - name: Package the results
+          ansible.builtin.command: tar czf {{ workdir }}/out.tgz -C {{ workdir }}/out .
+          changed_when: true
+
+      always:
+        - name: Log out of GHCR
+          ansible.builtin.command: docker logout ghcr.io
+          changed_when: false
+          failed_when: false
+
+    - name: Copy the results to the controller
+      ansible.builtin.fetch:
+        src: "{{ workdir }}/out.tgz"
+        dest: "{{ artifacts_dir }}/out.tgz"
+        flat: true
+
+    - name: Unpack the results on the controller
+      become: false
+      delegate_to: localhost
+      ansible.builtin.unarchive:
+        src: "{{ artifacts_dir }}/out.tgz"
+        dest: "{{ artifacts_dir }}"
+        remote_src: true
+
+    - name: Remove the archive on the controller
+      become: false
+      delegate_to: localhost
+      ansible.builtin.file:
+        path: "{{ artifacts_dir }}/out.tgz"
+        state: absent

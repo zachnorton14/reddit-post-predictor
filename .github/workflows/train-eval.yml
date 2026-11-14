@@ -13,6 +13,11 @@ on:
   pull_request:
     branches: [release]
   workflow_dispatch:
+    inputs:
+      smoke:
+        description: Only check VCL access (reserve, set up Docker and the GPU runtime, end). No training.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -29,7 +34,9 @@ env:
 jobs:
   image:
     # Never run fork code with the VCL secrets or on the self-hosted runner.
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      !inputs.smoke &&
+      (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -126,6 +133,47 @@ jobs:
         run: |
           if [ -f .vcl_state.json ]; then python -m vcl down; fi
           rm -f vcl_inventory.ini .vcl_state.json
+
+  # Manual check that the controller can reserve a GPU instance, log in with VCL_SSH_KEY, get root, and run
+  # a CUDA container. Uses the playbook's `setup` tasks only, so it needs no training image or scripts.
+  smoke:
+    if: inputs.smoke
+    runs-on: [self-hosted, Linux]
+    environment: vcl
+    timeout-minutes: 90
+    env:
+      VCL_TOKEN: ${{ secrets.VCL_TOKEN }}
+      ANSIBLE_HOST_KEY_CHECKING: "False"
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up tools
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -q -r vcl/requirements.txt ansible-core
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      - name: Reserve a GPU instance
+        run: python -m vcl up gpu-train --length 60 --inventory vcl_inventory.ini
+      - name: Write the SSH key
+        env:
+          VCL_SSH_KEY: ${{ secrets.VCL_SSH_KEY }}
+        run: |
+          key="$RUNNER_TEMP/vcl_key" && printf '%s\n' "$VCL_SSH_KEY" > "$key" && chmod 600 "$key"
+          echo "KEY=$key" >> "$GITHUB_ENV"
+      - name: Key login, sudo and machine specs
+        run: |
+          ansible vcl -i vcl_inventory.ini --private-key "$KEY" -m shell -a \
+            'whoami; sudo -n true && echo "sudo: passwordless"; lsb_release -ds; nproc; free -g | head -2; df -h / | tail -1; nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv; docker --version || echo "docker: not installed"'
+      - name: Install Docker and the NVIDIA container toolkit
+        run: ansible-playbook -i vcl_inventory.ini --private-key "$KEY" infra/ansible/train.yml --tags setup
+      - name: Run a CUDA container on the GPU
+        run: |
+          ansible vcl -i vcl_inventory.ini --private-key "$KEY" -b -m command -a \
+            'docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi'
+      - name: End the reservation
+        if: always()
+        run: |
+          if [ -f .vcl_state.json ]; then python -m vcl down; fi
+          rm -f vcl_inventory.ini .vcl_state.json "$KEY"
 
   gate:
     needs: train-eval
