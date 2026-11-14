@@ -10,7 +10,14 @@
   vars:
     workdir: /opt/train
     nvidia_keyring: /etc/apt/keyrings/nvidia-container-toolkit.asc
+  gather_facts: false
   tasks:
+    - name: Wait for SSH (VCL opens the firewall shortly after the reservation is ready)
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+        sleep: 10
+      tags: [always]
+
     - name: Check that the NVIDIA driver sees the GPU
       tags: [setup]
       ansible.builtin.command: nvidia-smi

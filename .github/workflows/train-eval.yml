@@ -166,6 +166,8 @@ jobs:
         run: |
           key="$RUNNER_TEMP/vcl_key" && printf '%s\n' "$VCL_SSH_KEY" > "$key" && chmod 600 "$key"
           echo "KEY=$key" >> "$GITHUB_ENV"
+      - name: Wait for SSH (VCL opens the firewall shortly after the reservation is ready)
+        run: ansible vcl -i vcl_inventory.ini --private-key "$KEY" -m wait_for_connection -a "timeout=300 sleep=10"
       - name: Key login, sudo and machine specs
         run: |
           ansible vcl -i vcl_inventory.ini --private-key "$KEY" -m shell -a \
