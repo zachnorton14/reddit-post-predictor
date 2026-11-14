@@ -19,7 +19,7 @@ pass the gate) → automatic deploy.
   `infra/ansible/train.yml` against it, copies the results back, and always runs `python -m vcl down`.
   VCL lets only the IP that requested the connection reach the instance, so all of this stays in one job on
   the controller.
-- The controller needs `python3` with `venv`, `git` and outbound SSH. The job installs `ansible-core`,
+- The controller needs `git` and outbound SSH. The jobs get Python from `actions/setup-python`. The job installs `ansible-core`,
   `pyyaml` and `huggingface_hub` into `.venv` in its workspace.
 - The repo is public. The self-hosted job runs only for pull requests from branches in this repo, never
   forks. Also set Settings → Actions → General → "Require approval for all outside collaborators".

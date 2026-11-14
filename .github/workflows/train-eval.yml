@@ -83,10 +83,14 @@ jobs:
       GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v5
+      # The controller's system Python has no venv module; this needs no sudo on the host.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Set up tools
         run: |
-          python3 -m venv .venv
+          python -m venv .venv
           .venv/bin/pip install -q -r vcl/requirements.txt ansible-core "huggingface_hub>=0.25"
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
@@ -146,9 +150,12 @@ jobs:
       ANSIBLE_HOST_KEY_CHECKING: "False"
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Set up tools
         run: |
-          python3 -m venv .venv
+          python -m venv .venv
           .venv/bin/pip install -q -r vcl/requirements.txt ansible-core
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - name: Reserve a GPU instance
