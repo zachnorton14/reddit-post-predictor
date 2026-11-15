@@ -1,0 +1,75 @@
+{
+  "protocol": {
+    "completed_models": [
+      "interaction"
+    ],
+    "deberta_status": "deferred to user; memory check passed",
+    "original_training_protocol": {
+      "train_posts": 174043,
+      "val_posts": 29760,
+      "train_fingerprint": "bca0a699beb476810d361ed5c30b52833832b96e7bea07174e6cbf136bdce9e8",
+      "val_fingerprint": "d98019e84ee3974f5733dd862846c3ea078cc8e601d0b9e82c243326dde8bbd2",
+      "test_fingerprint": "fe386e4ce3e3104eda71e3b4b71abc6cb7a6b987e68b19745ca7e8abc5dbfafe",
+      "epochs": 3,
+      "models": [
+        "interaction",
+        "deberta"
+      ],
+      "seed": 42,
+      "test_status": "Previously inspected historical test; exploratory only",
+      "runner_sha256": "1f9de22c038d51a804e91323a320d18817398b37b627104e62b2722fe15b4d3a"
+    }
+  },
+  "runs": {
+    "interaction": {
+      "identity": {
+        "spec": {
+          "name": "interaction",
+          "architecture": "interaction",
+          "source": "C:\\Users\\owens\\Documents\\GitHub\\reddit-post-predictor\\data\\pretrained\\minilm",
+          "max_length": 64,
+          "hidden": 128,
+          "dropout": 0.1,
+          "epochs": 3,
+          "batch_size": 64,
+          "accumulation": 2,
+          "learning_rate": 3e-05,
+          "seed": 42,
+          "checkpointing": false,
+          "use_fast_tokenizer": true,
+          "body_chars": null
+        },
+        "train_fingerprint": "bca0a699beb476810d361ed5c30b52833832b96e7bea07174e6cbf136bdce9e8",
+        "val_fingerprint": "d98019e84ee3974f5733dd862846c3ea078cc8e601d0b9e82c243326dde8bbd2",
+        "pretrained_sha256": {
+          "config.json": "953f9c0d463486b10a6871cc2fd59f223b2c70184f49815e7efbcab5d8908b41",
+          "model.safetensors": "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db",
+          "special_tokens_map.json": "303df45a03609e4ead04bc3dc1536d0ab19b5358db685b6f3da123d05ec200e3",
+          "tokenizer.json": "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037",
+          "tokenizer_config.json": "acb92769e8195aabd29b7b2137a9e6d6e25c476a4f15aa4355c233426c61576b",
+          "vocab.txt": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3"
+        },
+        "code_sha256": "700e4bb82addee670e703643256e00b5e4d356397b87c122a619cff6a3750698"
+      },
+      "complete": {
+        "seconds": 1102.7960000000003,
+        "train_posts": 174043,
+        "val_posts": 29760,
+        "device": "cuda",
+        "torch": "2.11.0+cu128",
+        "peak_gpu_mib": 1233.884765625,
+        "best_val_ap": 0.2506331750404994
+      },
+      "best": {
+        "epoch": 3,
+        "train_loss": 0.7828011955468346,
+        "seconds": 1102.5,
+        "ap": 0.2506331750404994,
+        "spearman": 0.37831205358816994,
+        "precision_top1": 0.44107744107744107,
+        "precision_top5": 0.3521505376344086,
+        "precision_top10": 0.3024193548387097
+      }
+    }
+  }
+}

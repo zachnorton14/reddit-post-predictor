@@ -1,5 +1,31 @@
 # Model experiment log
 
+## Neural prototype update — 2026-11-14
+
+The completed setup/punchline MiniLM prototype uses a shared text encoder, title
+and body vectors plus their absolute difference/product, 16 metadata features,
+and a 128-unit regression head. It was trained for three epochs on 2019–2023
+dadjokes posts and selected using 2024 validation AP.
+
+| System | Validation AP | Historical test AP | Test top-10% success |
+|---|---:|---:|---:|
+| Saved three-seed MiniLM + HGB reference | 0.2524 | 0.2792 | 32.1% |
+| Setup/punchline MiniLM, seed 42 | 0.2506 | 0.2804 | 32.8% |
+| Validation-selected prototype/reference blend | 0.2566 | 0.2855 | 33.3% |
+
+The blend uses a 55% prototype weight on fixed-reference percentile scores;
+weights were fitted on Jan–Jun and gated on Jul–Dec 2024. Gate AP rose from
+0.2660 to 0.2708. This gate overlaps neural checkpoint selection. Historical test
+results are exploratory and do not establish prospective performance. Exact
+values are in `results/prototypes/interaction_review/metrics.csv`.
+
+DeBERTa-v3-base + metadata is implemented and GPU memory-tested, but its full
+training run is left to the user. `PROTOTYPES.md` contains the handoff command.
+The older pooled experiments below use a different scope and are not directly
+comparable to these single-subreddit results.
+
+---
+
 Updated 2026-10-24 after the full text-only benchmark and graph regeneration.
 
 ## Current implemented models

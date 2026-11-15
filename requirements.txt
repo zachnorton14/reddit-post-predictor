@@ -8,9 +8,11 @@ pandas>=2.2
 pyarrow>=17
 scikit-learn>=1.5
 scipy
-sentence-transformers>=6.2
-torch>=2.14
-transformers>=5.20
+sentence-transformers>=3.4
+torch>=2.6
+transformers>=4.48,<5
+sentencepiece>=0.2
+protobuf>=4
 pillow
 soundfile
 torchvision

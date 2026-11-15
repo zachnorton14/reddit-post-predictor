@@ -1,0 +1,38 @@
+{
+  "ranking_blend": {
+    "ap_delta_95ci": [
+      -0.005612965183634762,
+      -0.0016375913106174854
+    ],
+    "precision_top10_delta_95ci": [
+      -0.006990768628020323,
+      0.004728858167246257
+    ],
+    "repetitions": 500,
+    "resampling": "paired calendar weeks"
+  },
+  "interaction": {
+    "ap_delta_95ci": [
+      -0.007161170687447228,
+      0.009853258032498674
+    ],
+    "precision_top10_delta_95ci": [
+      -0.004498921905531951,
+      0.01769897509013994
+    ],
+    "repetitions": 500,
+    "resampling": "paired calendar weeks"
+  },
+  "interaction_blend": {
+    "ap_delta_95ci": [
+      0.0009406647127537707,
+      0.011532487043261713
+    ],
+    "precision_top10_delta_95ci": [
+      0.002577113384444485,
+      0.02182901705240961
+    ],
+    "repetitions": 500,
+    "resampling": "paired calendar weeks"
+  }
+}
