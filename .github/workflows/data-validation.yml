@@ -13,12 +13,10 @@ on:
       revision:
         description: Commit to check (default latest)
         required: false
-  push:
-    branches: [main]
-    paths: &validation ["validate_dataset.py", "textonly_data.py", "textonly_baselines.py", "reddit_data.py",
-                        "extract_subreddits.py", "requirements-ci.txt", ".github/workflows/data-validation.yml"]
   pull_request:
-    paths: *validation
+    branches: [dev]
+    paths: ["validate_dataset.py", "textonly_data.py", "textonly_baselines.py", "reddit_data.py",
+            "extract_subreddits.py", "requirements-ci.txt", ".github/workflows/data-validation.yml"]
 
 env:
   REPO: ${{ github.event.client_payload.repo || inputs.repo || 'jbduran/textonly-subreddit-predictors' }}

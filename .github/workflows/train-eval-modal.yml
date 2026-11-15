@@ -46,12 +46,20 @@ jobs:
             --out artifacts --gpu "${{ inputs.gpu }}"
 
       - name: Record what produced this model
+        id: record
         run: |
+          path=$(python scripts/hf_models.py path artifacts/model/model.json)
+          echo "path=$path" >> "$GITHUB_OUTPUT"
           cat > artifacts/run.json <<EOF
           {"commit": "${{ github.sha }}", "dataset": "$DATASET",
            "dataset_revision": "${{ steps.data.outputs.revision }}",
-           "provider": "modal", "gpu": "${{ inputs.gpu }}", "run_id": ${{ github.run_id }}}
+           "provider": "modal", "gpu": "${{ inputs.gpu }}", "hf_path": "$path", "run_id": ${{ github.run_id }}}
           EOF
+
+      - name: Store the candidate on Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_MODEL_TOKEN }}
+        run: python scripts/hf_models.py upload artifacts "${{ steps.record.outputs.path }}"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -68,11 +76,12 @@ jobs:
         with:
           name: candidate
           path: candidate
-      - name: Fetch the production model's metrics (latest model release)
+      # Unlike the VCL path, the champion is not scored again here: this compares with its stored metrics.
+      - name: Fetch the champion's stored metrics
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_MODEL_TOKEN }}
         run: |
-          tag=$(gh release list --json tagName --jq '[.[] | select(.tagName | startswith("model-"))][0].tagName // empty')
-          if [ -n "$tag" ]; then gh release download "$tag" --pattern metrics.json --dir production; fi
-      - name: Compare candidate against production
-        run: python3 scripts/compare_metrics.py candidate/metrics.json production/metrics.json
+          pip install -q "huggingface_hub>=0.25"
+          python scripts/hf_models.py fetch-champion champion
+      - name: Compare the candidate against the champion
+        run: python3 scripts/compare_metrics.py candidate/metrics.json champion/metrics.json

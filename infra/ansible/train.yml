@@ -1,7 +1,8 @@
 # Train and evaluate a candidate model on a VCL GPU instance, then copy the results to the controller.
 #
 # Run by .github/workflows/train-eval.yml against the inventory that `python -m vcl up` writes (group `vcl`).
-# Extra vars: image, dataset, revision, artifacts_dir. Environment: GHCR_USER, GHCR_TOKEN, HF_TOKEN.
+# Extra vars: image, dataset, revision, artifacts_dir, and optional champion_dir (the deployed model, from
+# `scripts/hf_models.py fetch-champion`). Environment: GHCR_USER, GHCR_TOKEN, HF_TOKEN.
 # Uses only ansible-core modules. Works on the Ubuntu 22 (RTX 2080 Ti) and Ubuntu 24 (L40S) GPU images,
 # which come with the NVIDIA driver and CUDA but not Docker. `--tags setup` runs only the Docker and NVIDIA setup.
 - name: Train and evaluate on the GPU instance
@@ -89,12 +90,12 @@
           ansible.builtin.command: docker run --rm --gpus all {{ image }} nvidia-smi
           changed_when: false
 
-        - name: Create a clean output directory
+        - name: Create clean output and champion directories
           ansible.builtin.file:
-            path: "{{ workdir }}/out"
-            state: "{{ item }}"
+            path: "{{ workdir }}/{{ item[0] }}"
+            state: "{{ item[1] }}"
             mode: "0755"
-          loop: [absent, directory]
+          loop: "{{ ['out', 'champion'] | product(['absent', 'directory']) | list }}"
 
         - name: Train
           ansible.builtin.command: >-
@@ -104,13 +105,32 @@
             HF_TOKEN: "{{ lookup('env', 'HF_TOKEN') }}"
           changed_when: true
 
-        - name: Evaluate
+        - name: Evaluate the candidate
           ansible.builtin.command: >-
             docker run --rm --gpus all -e HF_TOKEN -v {{ workdir }}/out:/out {{ image }}
-            python -m pipeline.evaluate --model /out/model --out /out/metrics.json
+            python -m pipeline.evaluate --model /out/model --dataset {{ dataset }} --revision {{ revision }}
+            --out /out/metrics.json
           environment:
             HF_TOKEN: "{{ lookup('env', 'HF_TOKEN') }}"
           changed_when: true
+
+        # Champion vs. challenger: score the deployed model with this commit's evaluate.py on the same test data.
+        - name: Copy the champion to the instance
+          ansible.builtin.copy:
+            src: "{{ champion_dir }}/model/"
+            dest: "{{ workdir }}/champion/"
+            mode: preserve
+          when: champion_dir | default('') | length > 0
+
+        - name: Evaluate the champion on the same test data
+          ansible.builtin.command: >-
+            docker run --rm --gpus all -e HF_TOKEN -v {{ workdir }}/out:/out -v {{ workdir }}/champion:/champion:ro
+            {{ image }} python -m pipeline.evaluate --model /champion --dataset {{ dataset }} --revision {{ revision }}
+            --out /out/champion_metrics.json
+          environment:
+            HF_TOKEN: "{{ lookup('env', 'HF_TOKEN') }}"
+          changed_when: true
+          when: champion_dir | default('') | length > 0
 
         - name: Package the results
           ansible.builtin.command: tar czf {{ workdir }}/out.tgz -C {{ workdir }}/out .

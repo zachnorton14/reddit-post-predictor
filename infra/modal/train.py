@@ -30,7 +30,8 @@ def train_eval(dataset: str, revision: str) -> bytes:
     model = out / "model"
     subprocess.run(["python", "-m", "pipeline.train", "--dataset", dataset, "--revision", revision,
                     "--out", str(model)], cwd=REPO, check=True)
-    subprocess.run(["python", "-m", "pipeline.evaluate", "--model", str(model),
+    subprocess.run(["python", "-m", "pipeline.evaluate", "--model", str(model), "--dataset", dataset,
+                    "--revision", revision,
                     "--out", str(out / "metrics.json")], cwd=REPO, check=True)
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:

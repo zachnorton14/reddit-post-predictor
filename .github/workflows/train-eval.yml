@@ -1,5 +1,6 @@
-# Train and evaluate a candidate model on a VCL GPU instance for every pull request into `release`.
-# The `gate` job is a required status check on `release`: a candidate that regresses cannot be merged.
+# Train and evaluate a candidate model on a VCL GPU instance whenever model code lands on `dev`.
+# The run's `gate` result attaches to that commit. A `dev` -> `release` pull request is allowed only when
+# release-check.yml finds a passing run for the latest model change (see docs/pipeline.md).
 #
 #   image (hosted) ──► train-eval (self-hosted controller) ──► gate (hosted)
 #
@@ -10,8 +11,10 @@
 name: train-eval
 
 on:
-  pull_request:
-    branches: [release]
+  push:
+    branches: [dev]
+    # Files that change the trained model. Keep in sync with MODEL_PATHS in scripts/find_candidate.sh.
+    paths: ["*.py", "pipeline/**", "docker/train.Dockerfile", "requirements.txt"]
   workflow_dispatch:
     inputs:
       smoke:
@@ -22,7 +25,7 @@ on:
 permissions:
   contents: read
 
-# One GPU reservation at a time; queue instead of cancelling a paid-for run.
+# One GPU reservation at a time. A newer push replaces a queued run; a running one finishes.
 concurrency:
   group: vcl-gpu
   cancel-in-progress: false
@@ -33,10 +36,8 @@ env:
 
 jobs:
   image:
-    # Never run fork code with the VCL secrets or on the self-hosted runner.
-    if: >-
-      !inputs.smoke &&
-      (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
+    # Push and manual events only run code from this repo, never forks.
+    if: ${{ !inputs.smoke }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -100,6 +101,14 @@ jobs:
           rev=$(python -c "from huggingface_hub import HfApi; print(HfApi().dataset_info('$DATASET').sha)")
           echo "revision=$rev" >> "$GITHUB_OUTPUT"
 
+      - name: Fetch the champion (the deployed model) to score on the same data
+        id: champion
+        env:
+          HF_TOKEN: ${{ secrets.HF_MODEL_TOKEN }}
+        run: |
+          python scripts/hf_models.py fetch-champion champion
+          if [ -f champion/model/model.json ]; then echo "dir=$PWD/champion" >> "$GITHUB_OUTPUT"; fi
+
       - name: Reserve a GPU instance
         id: vcl
         # Writes request_id, ip, user, port to $GITHUB_OUTPUT and .vcl_state.json.
@@ -116,15 +125,24 @@ jobs:
           ansible-playbook -i vcl_inventory.ini --private-key "$key" infra/ansible/train.yml \
             -e image="${{ needs.image.outputs.ref }}" \
             -e dataset="$DATASET" -e revision="${{ steps.data.outputs.revision }}" \
-            -e artifacts_dir="$PWD/artifacts"
+            -e artifacts_dir="$PWD/artifacts" -e champion_dir="${{ steps.champion.outputs.dir }}"
 
       - name: Record what produced this model
+        id: record
         run: |
+          path=$(python scripts/hf_models.py path artifacts/model/model.json)
+          echo "path=$path" >> "$GITHUB_OUTPUT"
           cat > artifacts/run.json <<EOF
-          {"commit": "${{ github.event.pull_request.head.sha || github.sha }}",
+          {"commit": "${{ github.sha }}",
            "dataset": "$DATASET", "dataset_revision": "${{ steps.data.outputs.revision }}",
-           "image": "${{ needs.image.outputs.ref }}", "run_id": ${{ github.run_id }}}
+           "image": "${{ needs.image.outputs.ref }}", "provider": "vcl", "hf_path": "$path",
+           "run_id": ${{ github.run_id }}}
           EOF
+
+      - name: Store the candidate on Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_MODEL_TOKEN }}
+        run: python scripts/hf_models.py upload artifacts "${{ steps.record.outputs.path }}"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -137,6 +155,7 @@ jobs:
         run: |
           if [ -f .vcl_state.json ]; then python -m vcl down; fi
           rm -f vcl_inventory.ini .vcl_state.json
+          rm -rf champion
 
   # Manual check that the controller can reserve a GPU instance, log in with VCL_SSH_KEY, get root, and run
   # a CUDA container. Uses the playbook's `setup` tasks only, so it needs no training image or scripts.
@@ -193,11 +212,6 @@ jobs:
         with:
           name: candidate
           path: candidate
-      - name: Fetch the production model's metrics (latest model release)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          tag=$(gh release list --json tagName --jq '[.[] | select(.tagName | startswith("model-"))][0].tagName // empty')
-          if [ -n "$tag" ]; then gh release download "$tag" --pattern metrics.json --dir production; fi
-      - name: Compare candidate against production
-        run: python3 scripts/compare_metrics.py candidate/metrics.json production/metrics.json
+      # Both files come from this run's evaluate.py on the same test data. No champion yet: passes.
+      - name: Compare the candidate against the champion
+        run: python3 scripts/compare_metrics.py candidate/metrics.json candidate/champion_metrics.json
