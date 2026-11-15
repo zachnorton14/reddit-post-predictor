@@ -1,9 +1,10 @@
 # Deploy the model that passed the gate when its pull request merges into `release`, then record it.
 #
-# The model is not retrained: this workflow takes the `candidate` artifact from the successful train-eval run
-# of the merged pull request's head commit, bakes it into an inference image, deploys, and publishes a
-# GitHub release `model-<n>` holding metrics.json and run.json (commit, dataset revision, training image).
-# The gate in train-eval reads the latest such release as the production baseline.
+# The model is not retrained. This workflow takes the `candidate` artifact from the train-eval run that
+# scripts/find_candidate.sh picks for the merged pull request (the one release-check approved). It bakes the
+# model into an inference image, deploys it, publishes a GitHub release `model-<n>` (metrics.json, run.json),
+# and promotes the model on Hugging Face (champion.json and tag `model-<n>`). The next train-eval run scores
+# the candidate against this champion.
 name: deploy
 
 on:
@@ -31,6 +32,8 @@ jobs:
       image: ${{ steps.push.outputs.image }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - name: Find the train-eval run that passed for this merge
         id: run
         env:
@@ -38,8 +41,7 @@ jobs:
         run: |
           head=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].head.sha // empty')
           [ -n "$head" ] || { echo "::error::${{ github.sha }} did not come from a pull request"; exit 1; }
-          id=$(gh run list --workflow train-eval.yml --commit "$head" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
-          [ -n "$id" ] || { echo "::error::no successful train-eval run for $head"; exit 1; }
+          id=$(scripts/find_candidate.sh "$head")
           echo "id=$id" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
@@ -82,6 +84,7 @@ jobs:
     needs: [build, deploy]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with:
           name: model
@@ -94,3 +97,9 @@ jobs:
             --repo "${{ github.repository }}" --target "${{ github.sha }}" \
             --title "$MODEL_VERSION" \
             --notes "Image: ${{ needs.build.outputs.image }}"$'\n\n'"$(cat model/metrics.json)"
+      - name: Promote the model on Hugging Face (champion.json and tag)
+        env:
+          HF_TOKEN: ${{ secrets.HF_MODEL_TOKEN }}
+        run: |
+          pip install -q "huggingface_hub>=0.25"
+          python scripts/hf_models.py promote model/run.json "$MODEL_VERSION"

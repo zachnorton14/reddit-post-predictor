@@ -1,0 +1,27 @@
+# Required check on `release`: a `dev` -> `release` pull request may merge only when the latest model change
+# on its branch was trained and passed the gate (a train-eval run from a push to `dev`). Nothing is retrained.
+name: release-check
+
+on:
+  pull_request:
+    branches: [release]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  trained-candidate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Find the passing train-eval run for this pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          id=$(scripts/find_candidate.sh "${{ github.event.pull_request.head.sha }}")
+          echo "Candidate: train-eval run $id ($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$id)" \
+            | tee -a "$GITHUB_STEP_SUMMARY"

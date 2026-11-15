@@ -1,12 +1,11 @@
 # Code changes: lint and test
 name: Code CI
 
+# Runs on every pull request into `dev` (no path filter), so it can be a required check there.
 on:
-  push:
-    branches: [main]
-    paths: &code ["**.py", "requirements*.txt", "ruff.toml", ".github/workflows/ci.yml"]
   pull_request:
-    paths: *code
+    branches: [dev]
+  workflow_dispatch:
 
 jobs:
   lint-test:
