@@ -1,0 +1,7 @@
+line-length = 130
+extend-exclude = ["*.ipynb"]
+
+[lint]
+select = ["E", "F", "W"]
+# Existing style: lambdas assigned in feature builders, and short multi-statement plot lines
+ignore = ["E731", "E702"]
