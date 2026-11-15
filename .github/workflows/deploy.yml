@@ -99,7 +99,7 @@ jobs:
             --notes "Image: ${{ needs.build.outputs.image }}"$'\n\n'"$(cat model/metrics.json)"
       - name: Promote the model on Hugging Face (champion.json and tag)
         env:
-          HF_TOKEN: ${{ secrets.HF_MODEL_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           pip install -q "huggingface_hub>=0.25"
           python scripts/hf_models.py promote model/run.json "$MODEL_VERSION"

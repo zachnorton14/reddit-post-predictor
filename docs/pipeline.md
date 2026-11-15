@@ -44,10 +44,9 @@ Stored in GitHub, never in the repo. Locally, `HF_TOKEN` goes in `.env` (ignored
 | Secret | Where | Used by | Notes |
 |---|---|---|---|
 | `GITHUB_TOKEN` | automatic | all | GHCR push and pull, releases, artifact download. Nothing to set. |
-| `HF_TOKEN` | repository | data validation, train-eval | Hugging Face read token for the dataset |
+| `HF_TOKEN` | repository | data validation, train-eval, train-eval-modal, deploy | Hugging Face read/write token: reads the dataset, writes `zachnorton03/reddit-post-predictor-models`. Must be a repository secret (not an environment secret): the jobs that use it run in other environments or none. |
 | `VCL_TOKEN` | environment `vcl` | train-eval | VCL API token (vcl.ncsu.edu → Manage → User Preferences → Manage Tokens) |
 | `VCL_SSH_KEY` | environment `vcl` | train-eval | private key Ansible uses to reach the GPU instance |
-| `HF_MODEL_TOKEN` | repository | train-eval, train-eval-modal, deploy | Hugging Face token with write access to `zachnorton03/reddit-post-predictor-models` only (fine-grained) |
 | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | environment `modal` | train-eval-modal | Modal API token (`modal token new`). Only needed if the fallback is used. |
 | `PROD_SSH_KEY`, `KUBECONFIG_DATA` | environment `production` | deploy | placeholders for the production deployment |
 
@@ -65,7 +64,6 @@ gh api -X POST repos/zachnorton14/reddit-post-predictor/environments/production/
 gh secret set HF_TOKEN                        # prompts for the value
 gh secret set VCL_TOKEN --env vcl
 gh secret set VCL_SSH_KEY --env vcl < ~/.ssh/id_vcl
-gh secret set HF_MODEL_TOKEN                  # fine-grained token: write on the models repo only
 ```
 
 Branch protection: on `dev` require `lint-test` (CI); on `release` require `trained-candidate`
