@@ -104,7 +104,7 @@ jobs:
       - name: Fetch the champion (the deployed model) to score on the same data
         id: champion
         env:
-          HF_TOKEN: ${{ secrets.HF_MODEL_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python scripts/hf_models.py fetch-champion champion
           if [ -f champion/model/model.json ]; then echo "dir=$PWD/champion" >> "$GITHUB_OUTPUT"; fi
@@ -141,7 +141,7 @@ jobs:
 
       - name: Store the candidate on Hugging Face
         env:
-          HF_TOKEN: ${{ secrets.HF_MODEL_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python scripts/hf_models.py upload artifacts "${{ steps.record.outputs.path }}"
 
       - uses: actions/upload-artifact@v4

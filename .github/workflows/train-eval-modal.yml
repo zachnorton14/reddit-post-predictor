@@ -58,7 +58,7 @@ jobs:
 
       - name: Store the candidate on Hugging Face
         env:
-          HF_TOKEN: ${{ secrets.HF_MODEL_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python scripts/hf_models.py upload artifacts "${{ steps.record.outputs.path }}"
 
       - uses: actions/upload-artifact@v4
@@ -79,7 +79,7 @@ jobs:
       # Unlike the VCL path, the champion is not scored again here: this compares with its stored metrics.
       - name: Fetch the champion's stored metrics
         env:
-          HF_TOKEN: ${{ secrets.HF_MODEL_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           pip install -q "huggingface_hub>=0.25"
           python scripts/hf_models.py fetch-champion champion
