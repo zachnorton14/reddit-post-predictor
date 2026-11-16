@@ -1,0 +1,154 @@
+{
+  "selected": "interaction_blend",
+  "best_gate_candidate": "interaction_blend",
+  "gate_ap": {
+    "incumbent": 0.2660260687052736,
+    "ranking_blend": 0.2648068978648754,
+    "interaction": 0.26516292854836415,
+    "interaction_blend": 0.27077715492948834
+  },
+  "minimum_gate_ap_gain": 0.002,
+  "blend_specs": {
+    "ranking_blend": {
+      "weight_hgb": 0.0,
+      "trials": [
+        {
+          "weight_second": 0.0,
+          "ap": 0.2411973022601125
+        },
+        {
+          "weight_second": 0.05,
+          "ap": 0.2375358457255207
+        },
+        {
+          "weight_second": 0.1,
+          "ap": 0.23500205632457297
+        },
+        {
+          "weight_second": 0.15000000000000002,
+          "ap": 0.232401000849649
+        },
+        {
+          "weight_second": 0.2,
+          "ap": 0.2291170171743822
+        },
+        {
+          "weight_second": 0.25,
+          "ap": 0.22577075382986939
+        },
+        {
+          "weight_second": 0.30000000000000004,
+          "ap": 0.22219030678325521
+        },
+        {
+          "weight_second": 0.35000000000000003,
+          "ap": 0.21850499477507448
+        },
+        {
+          "weight_second": 0.4,
+          "ap": 0.21456509716522015
+        },
+        {
+          "weight_second": 0.45,
+          "ap": 0.2105139861710089
+        },
+        {
+          "weight_second": 0.5,
+          "ap": 0.20600301109983796
+        }
+      ]
+    },
+    "interaction_blend": {
+      "weight_prototype": 0.55,
+      "trials": [
+        {
+          "weight_second": 0.0,
+          "ap": 0.2404555588343664
+        },
+        {
+          "weight_second": 0.05,
+          "ap": 0.24140800326576684
+        },
+        {
+          "weight_second": 0.1,
+          "ap": 0.24220858275284762
+        },
+        {
+          "weight_second": 0.15000000000000002,
+          "ap": 0.2427565487265267
+        },
+        {
+          "weight_second": 0.2,
+          "ap": 0.24314194906606543
+        },
+        {
+          "weight_second": 0.25,
+          "ap": 0.2435021583246963
+        },
+        {
+          "weight_second": 0.30000000000000004,
+          "ap": 0.24374446840099373
+        },
+        {
+          "weight_second": 0.35000000000000003,
+          "ap": 0.2440501988303979
+        },
+        {
+          "weight_second": 0.4,
+          "ap": 0.24419500235063177
+        },
+        {
+          "weight_second": 0.45,
+          "ap": 0.24414141471019862
+        },
+        {
+          "weight_second": 0.5,
+          "ap": 0.2441403219015149
+        },
+        {
+          "weight_second": 0.55,
+          "ap": 0.24442133256539372
+        },
+        {
+          "weight_second": 0.6000000000000001,
+          "ap": 0.24419925123889488
+        },
+        {
+          "weight_second": 0.65,
+          "ap": 0.24380534705249057
+        },
+        {
+          "weight_second": 0.7000000000000001,
+          "ap": 0.24334424127882953
+        },
+        {
+          "weight_second": 0.75,
+          "ap": 0.24275741665999825
+        },
+        {
+          "weight_second": 0.8,
+          "ap": 0.24218298124811383
+        },
+        {
+          "weight_second": 0.8500000000000001,
+          "ap": 0.24161964976595013
+        },
+        {
+          "weight_second": 0.9,
+          "ap": 0.240849745534
+        },
+        {
+          "weight_second": 0.9500000000000001,
+          "ap": 0.23979692013774828
+        },
+        {
+          "weight_second": 1.0,
+          "ap": 0.23832774447647764
+        }
+      ]
+    }
+  },
+  "fit_posts": 14331,
+  "gate_posts": 15429,
+  "rule": "Tune weights Jan-Jun 2024, choose by Jul-Dec AP, require +0.002 AP; no test selection"
+}

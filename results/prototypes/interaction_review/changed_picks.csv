@@ -1,0 +1,88 @@
+category,id,title,body_excerpt,label,seen_title,old_score,selected_score
+new_success,1naexqt,At dinner tonight I got an eye roll from my wife and laughs from my 9 yos,"My wife was really enjoying them garlic bread I made with the lasagne. She sighs with satisfaction and pats her tummy and says, ""I ate so much garlic bread I'm going to have a food baby"".
+
+I spent the next 5 minutes working it out and then said, ""ya,",1,False,5.255532077655848,0.9513083525225037
+new_success,1lavat9,"Before my surgery, the anesthesiologist asked if I'd like to be knocked out with gas, or he could just hit me over the head with a boat paddle.",It was an Ether/Oar situation,1,False,5.340024081177441,0.9459214290698486
+new_success,1pytonm,"My daughter 11 year old daughter, being a smart ass, asked if she was adopted.","I said, ""not yet.""",1,False,5.256796349766895,0.9457679157072081
+new_success,1p3mhaa,"A woman hurried to a pharmacy to pick up medication for her sick husband. When she got back to the car, she found she’d locked her keys inside.","The woman found an old rusty coat hanger on the ground. She looked at it and said, ""I don't know how to use this.""
+
+She bowed her head and asked God to send her some help. Within five minutes an old motorcycle pulled up, driven by a bearded man who w",1,False,5.159600147095404,0.943964133696183
+new_success,1mm3wgj,"I sneezed at the dinner table, and my mother in law said something like “Gazoon Height” - I had no idea what she meant by that.",Probably a blessing in disguise,1,False,5.074485346871277,0.9416509664363966
+new_success,1hwgb24,"""Dad"", my son asked me, ""Where do you find all of those awful 'Dad' jokes?""",In a dada base.,1,False,5.2206805949915385,0.9399762752075919
+new_success,1lbxnxb,"A sperm donor, a carpenter and Julius Caesar walked into a bar.","He came, he saw, he conquered.",1,False,5.339038181877302,0.9395192240597305
+new_success,1ig9syj,"My wife stopped me from taking my first bite at the restaurant, saying that we need to pray first.","""Nah, there's no need"" I replied.
+
+""But why?"" she asked. ""We always pray at home when I cook dinner.""
+
+""Because I think we'll be fine here, the chef knows what he's doing.""",1,False,5.348029268734016,0.9388807480287489
+new_success,1kfvn18,A Drummer has two daughters.  What does he name them?,"Anna~1, Anna-2 ..,",1,False,5.3229694586757175,0.9388284139278487
+new_success,1ir03kr,"My wife looked at my feet this morning and said,”Honey, your socks don’t match.”","“That’s funny,” I said. “I have another pair just like them in the drawer.”",1,False,4.9941665090916665,0.9377677761496057
+new_success,1qfhv2z,My 8 year old had a nightmare that he was being eaten by our vacuum cleaner.,"I said, “That’s a terrible way to Dyson.”",1,False,5.332391661712376,0.9372549019607843
+new_success,1o2tmpk,"A Penguin walks into a bar and says to the bartender, ""Have you got any dad jokes?""","And the bartender says, ""Nope, but I've got a few ice breakers.""",1,False,5.167051569468871,0.9371607005791641
+new_success,1p9708w,"At the end of our holiday visit I asked my dad if he approved of my new girlfriend, even though the only job she’s ever had was working at a zoo.","He said, “Son, she’s a keeper.”",1,False,5.325229912031817,0.9370036982764636
+new_success,1jixwlj,"My son came to me the other day and said, ""Dad, I am no longer a girl"".","""Well, son"", I replied. ""I am no longer opaque"".",1,False,5.154937762670266,0.9365431581885424
+new_success,1lmy0vw,"Man, I was robbed by six dwarfs today.",Not Happy.,1,False,5.253911295477009,0.936079129160561
+new_success,1lwohoq,I told a girl I have a Lamborghini. She got so excited and asked to see it,For some reason she got disappointed when I showed her my tractor.,1,False,5.225180533484485,0.9357895471355802
+new_success,1l8m0we,"A man walks into a bar. As he's ordering a beer, he happens to glance down towards the other end of the bar and see a man with a big orange head. As the bartender brings his beer, the man asks him, ""What's with the guy with the big orange head?""","The bartender chuckles. ""Yeah,"" he says, ""That's a helluva story, alright. Why don't you go buy him a drink, and maybe he'll tell you about it.""
+
+So the man walks over to the guy with the orange head, introduces himself, and offers to buy him a beer.",1,False,4.976054525811109,0.9344358383922964
+new_success,1op48k0,"Talking to the farmer, the ear of corn begged, “Please don’t eat me!  I served honorably in armed services.”",“I used to be a kernel.”,1,False,5.160124936730292,0.9340625218058753
+new_success,1mdhaf7,"First child eats dirt, dad calls the doctor. Second child eats dirt, dad cleans out their mouth. Third child eats dirt,",dad wonders if he still needs to make lunch.,1,False,4.997126394103321,0.9334659130556138
+new_success,1qrn3jy,I've been working on a joke about Pythagoras...,But I just can't find the right angle.,1,False,5.286604763235882,0.9329460609866722
+new_false_positive,1mzkcec,What has four letters often has five letters and always ends with a S,"Oops, I should've punctuated that statement for clarity. 
+
+'What' has four letters, 'often' has five letters, and 'always' ends with a 'S'.",0,False,5.2852241091316765,0.9537610773846905
+new_false_positive,1m0mmgp,"I stormed into my bosses office and demanded a promotion.  He said ""if you don't get out here right now I have a feeling someone is going to get fired"", so I left.",I guess a premonition is close enough.,0,False,5.338241173838888,0.9487823599190566
+new_false_positive,1new3sx,Yesterday I found 5 ants in my basement and today I found another 5.,It seems I've now got tenants.,0,False,5.365594820822655,0.947177447491452
+new_false_positive,1lm5ma7,I was brutally attacked by a man with beer mug.,You should see the size of the brews he left.,0,False,5.359938292362217,0.9454504221617474
+new_false_positive,1m9s7x4,"My wife bought me some coffee to try. “It’s called Dark Magic,” she said. I’m like, “Oh wow! That was my nickname in high school.” She said, “Your nickname was Dark Magic?”","I said, “No…That.”",0,False,5.25742562532887,0.943611750750122
+new_false_positive,1kcmzsc,I walked into a joke store and asked “do you guys sell jokes?”,And they said No we're not a real shop.,0,False,5.342440939682796,0.943590817109762
+new_false_positive,1qe8ay3,I accidentally sprayed myself in the mouth with Axe body spray this morning.,Now I talk with an Axe scent.,0,False,5.292301652310704,0.94284418393692
+new_false_positive,1i9cdr6,What are a kidnappers favorite shoes?? (,White Vans,0,False,5.274291160900626,0.9420591724234177
+new_false_positive,1kyp9de,My career counsellor told me I should be an electrician.,I was shocked.,0,False,5.2012281989778915,0.9417207452375969
+new_false_positive,1qz318z,"""In bed with a priest, a nun said, ""Father, I never expected you'd have such a small organ.""","He replied, ""Why, Sister... I never expected to be playing in such a large cathedral.""",0,False,5.345976187354467,0.9414660526132161
+new_false_positive,1oeuuol,"Jokes about the numbers 2, 3, 5, 7, 11, 13 and 17 have been quite popular…",They’re in their prime.,0,False,5.147946441208913,0.9404926383364733
+new_false_positive,1m6bve5,"I have the heart of a lion, And the eye of a tiger",And a lifetime ban from the zoo,0,False,5.1443405230470125,0.9401228106901124
+new_false_positive,1mzu02i,My new wife just gave birth on our stairs.,Now I have a stepson.,0,False,5.082616836859484,0.9399588305072919
+new_false_positive,1nntwy7,"My wife and I were solving a jigsaw puzzle. She got bored, leaned closer, bit her lip, and whispered, “Wanna make a baby?”","I got super excited. She told me, *“You just bring up the stuff from the store, I’ll get everything else ready.”*  
+Later that night, she was furious… I’d brought back a baby jigsaw puzzle.",0,False,5.245483482839226,0.9396169143814109
+new_false_positive,1qdmyqk,The cheapest meat you can buy is deer testicles.,They're under a buck.,0,False,5.356469337689269,0.9393831553973901
+new_false_positive,1qnp8e3,A bus station is where bus stops. A train station where a train stops.,"At office, I have work station.",0,False,5.312230227124379,0.9390900844323494
+new_false_positive,1kfepi7,I was crushed by a pile of falling books the other day.,I guess I only have my shelf to blame..,0,False,5.2580511286772245,0.9379247784523063
+new_false_positive,1iskvdi,"“Anything that can go wrong, will go wrong” is Murphy’s Law, but have you heard of Cole’s Law?",It’s thinly sliced cabbage and mayonnaise,0,False,5.292746639870763,0.9375863512664853
+new_false_positive,1i153it,"A giraffe, a loaf of bread, a fly and an elephant decide to go parkouring. They climb an 10 story apartment and as they all jump to the other side, a cat spooks the quartert and they start falling...","Giraffe falling: ""10, 1""
+
+Fly falling: ""10, 9, 8...""
+
+Loaf: ""10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10""
+
+Elephant: ""10, 8, 6, 4, 2, basement; salutations, miners!""",0,False,5.289720899985447,0.937492149884865
+new_false_positive,1qguc2u,I got arrested for robbing the restaurant depot...,It was a whisk I was willing to take.,0,False,5.260465959959208,0.9370071872165237
+lost_success,1pojdh3,What did the janitor say when he jumped out of the closet?,SUPPLIES!!!,1,True,5.776477148080927,0.8980671272067546
+lost_success,1ou8m5n,I was at a job interview and they asked me how I perform under pressure.,Not very well but I can absolutely kill it on Bohemian Rhapsody.,1,False,6.604697832110238,0.897850812923034
+lost_success,1nyke5g,"I was out walking and saw a guy carrying a Scrabble board, he tripped, tiles went everywhere….","I couldn’t help myself. I asked him, “What’s the word on the street?”",1,False,5.798455346350641,0.8977915009420139
+lost_success,1lk14nb,Did you hear the joke about the world’s worst thesaurus?,"Not only is it terrible, it’s terrible.",1,False,5.816290199848341,0.8975716977182332
+lost_success,1kvgdut,The worst hotel I ever went to was called The Fiddle.,It was a vile inn.,1,False,5.407320627720072,0.8974007396552928
+lost_success,1m6jk6i,My son just ran up to me waving his tablet and screaming,"Son: ‘Daddy, my Internet isn’t working.’
+
+Me: ‘What is it?’
+
+My son: ‘It’s a worldwide network of computers and other systems that all speak to each other, but that’s not important right now.’
+
+Turns out he’d put it in Airplane mode by accident.",1,False,6.611226937251871,0.8973239829739725
+lost_success,1nsq0n4,"Son: ""Dad, today I watched someone do 50 pushups, do you think could you do that?""","Dad: ""of course son, don't want to brag but I could probably watch someone do 100 push-ups"".",1,False,5.79850009570984,0.8959493405903287
+lost_success,1kmtw3p,"My friend works in IT and I asked him, “How do you make a motherboard?”","He said, “I usually tell her about my job.”",1,True,5.7078876767674664,0.8958690949689485
+lost_success,1hz5lfk,What do you call a line of guys waiting for a haircut?,A barber-queue,1,False,5.6430645424731205,0.8950736166352662
+lost_success,1ppd5jc,My cloning experiments FINALLY paid off. I’m SO excited…,I’m beside myself.,1,False,5.919919978419338,0.8950631498150862
+lost_success,1nlxyjr,"I told my new neighbor, ""I've got a half brother."" He asked, ""Different dads?"" I said,",">!""No - shark attack.""!<",1,False,5.570395662341736,0.894661921708185
+lost_success,1mh1fri,"RIP, boiling water. You will be mist.","Not, really, you really steamed me up. Good riddance! ! !",1,False,5.5643403593611405,0.8945049194054846
+lost_success,1q6kha6,What’s a pirates least favorite letter?,"Dear sir or mam, We are writing you to inform you of your third copyright strike violation.",1,False,5.6898817617651,0.8944316516642243
+lost_success,1mp5iye,"I just had a physical. The doctor said ""Don't eat anything fatty. I said, like bacon and burgers?""","""No fatty, don't eat anything!""",1,False,6.341979743226876,0.8940269346172633
+lost_success,1q79790,"9 out of 10 zoo dentists refuse to treat grizzly bears unless it’s been given a STRONG anesthetic, proving true the old adage that…",There’s safety in numb-bears.,1,False,6.111485249516435,0.8939955341567232
+lost_success,1ntg6d1,Why do the Irish only put 239 beans in their chili?,"Because one more would be too farty (240)    
+
+I'll see myself in",1,False,6.103411997265487,0.8938699323145628
+lost_success,1k6jayn,"One time I knocked on a Psychic's door and she said ""who is it?""",so I left,1,False,5.427806812914795,0.8927639383155397
+lost_success,1oop849,Which font is best to write down swear words?,Cursive,1,False,5.548179290475863,0.8919963715023376
+lost_success,1r6p0o0,Please stick to dad jokes,"Moderators?  So many of the jokes here are absolutely not in line with the intent of the sub. why? If you have a really good joke you need to share, there is r/jokes and others.  If it is one you could not tell a 8 year old it does not belong here!  ",1,False,5.474967183267813,0.8912706719698555
+lost_success,1qaycpx,I saw a man with one arm shopping in a second hand store,I don’t think he will find what he’s looking for,1,False,5.978021190949995,0.8912322936291954

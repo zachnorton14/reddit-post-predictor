@@ -11,6 +11,8 @@ scipy
 sentence-transformers>=6.2
 torch>=2.14
 transformers>=5.20
+sentencepiece>=0.2  # DeBERTa-v3 tokenizer
+protobuf>=4
 pillow
 soundfile
 torchvision

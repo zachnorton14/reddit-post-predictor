@@ -47,7 +47,7 @@ class Config:
     val_end: str = "2025-01-01"       # validation: train_end to val_end; test: val_end and later
     max_train_per_sub: int = 150_000  # cap per subreddit, so AskReddit does not dominate the pooled model
     max_eval_per_sub: int = 30_000    # cap per subreddit in validation and in test
-    body_chars: int = 1000            # characters of the body (before any EDIT marker) used as text
+    body_chars: int | None = 1000     # None keeps the full body before any EDIT marker
     tfidf_max_features: int = 50_000
     tfidf_min_df: int = 5
     smoothing: int = 20               # pseudo-posts for the subreddit x time lookup rates
@@ -74,11 +74,12 @@ def load_data(cfg):
     td.add_labels(con, cfg.label_metric, cfg.success_quantile, cfg.period, cfg.min_period_posts, cfg.self_only)
     split_sql = (f"CASE WHEN created_at < TIMESTAMP '{cfg.train_end}' THEN 'train' "
                  f"WHEN created_at < TIMESTAMP '{cfg.val_end}' THEN 'val' ELSE 'test' END")
+    body_sql = "body_clean" if cfg.body_chars is None else f"left(body_clean, {int(cfg.body_chars)})"
     df = con.execute(f"""
     WITH s AS (SELECT *, {split_sql} AS split FROM labeled)
-    SELECT split, label, metric, metric_pct, score, num_comments, subreddit, period, created_at,
+    SELECT id, split, label, metric, metric_pct, score, num_comments, subreddit, period, created_at,
            local_hour, local_dow, local_month,
-           title, left(body_clean, {cfg.body_chars})       AS body,
+           title, {body_sql}                               AS body,
            ln(1 + title_length)                             AS log_title_length,
            title_words,
            ln(1 + body_length)                              AS log_body_length,

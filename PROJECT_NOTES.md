@@ -1,5 +1,59 @@
 # Project notes: EDA and baselines (handoff)
 
+## Update 2026-11-15: DeBERTa interruption recovery
+
+DeBERTa finished epoch one (2024 validation AP 0.24697, top-10% precision 29.10%)
+but hit a CUDA unknown error during epoch two. The saved epoch-one checkpoint is
+intact. The traceback does not establish a root cause; Windows power events show
+sleep/lid transitions, and the GPU responds in a fresh process.
+
+`run_prototypes.py --report --threads 4 --resume` preserves the finished MiniLM
+run and warm-starts DeBERTa from its saved first epoch. The original trainer saved
+no optimizer state, so this recovery resets the optimizer and schedules the two
+remaining epochs; that difference is recorded in `recovery.json` and completion
+metadata. No test outcomes are used for recovery or checkpoint selection.
+
+The revised trainer writes atomic full-state snapshots every five minutes and
+at epoch boundaries, including optimizer, schedule, batch position/order and RNG.
+Later retries resume from the last snapshot. It also requests Windows idle-sleep
+prevention during training/report generation, without changing power settings or
+overriding explicit sleep/lid actions. See `PROTOTYPES.md` for the command.
+
+## Update 2026-11-14: two neural prototypes and ensemble improvement
+
+`prototype_models.py` and `run_prototypes.py` add a shared-encoder setup/punchline
+MiniLM and a DeBERTa-v3-base + metadata prototype. The MiniLM prototype completed
+three epochs on 174,043 posts from 2019–2023; its epoch-3 checkpoint won on 2024
+validation AP (0.2506). The prior three-seed MiniLM/HGB reference was recovered
+from its saved checkpoints and checked against stored validation predictions.
+
+The validation-selected improvement blends 55% setup/punchline scores with 45%
+of the previous ensemble, after fixed-reference rank transforms. Weights are
+chosen on Jan–Jun 2024, with replacement gated on Jul–Dec AP (+0.002 minimum).
+The selected blend reached 0.2708 gate AP versus 0.2660 for the incumbent.
+
+| Model | Historical test AP | Top-10% success |
+|---|---:|---:|
+| Previous three-seed MiniLM + HGB | 0.2792 | 32.1% |
+| Setup/punchline MiniLM, single seed | 0.2804 | 32.8% |
+| Selected blend with setup/punchline | **0.2855** | **33.3%** |
+
+These are exploratory results on the previously inspected historical test set.
+The validation gate also overlaps checkpoint selection; it is not an untouched
+holdout. The new prototype has one seed, whereas the reference has three.
+The 35% top-10% target has not been reached.
+
+DeBERTa is implemented and passed a maximum-length GPU training/memory check
+(about 6.0 GiB allocated). Full training is deferred to the user. The default
+command in `PROTOTYPES.md` reuses the finished MiniLM run, trains DeBERTa, and
+generates the complete comparison. No training is left running at handoff.
+Eleven offline tests pass, covering checkpoint reload, chronology, outcome
+isolation, gradient checkpointing, blend selection and report ordering.
+
+Current results: `results/prototypes/interaction_review/`. Full results after
+the user's DeBERTa run: `results/prototypes/full/`. See `PROTOTYPES.md` for commands
+and `predict_prototypes.py` for scoring derived posting-time features.
+
 ## Update 2026-10-24: random forest and gradient boosting
 
 `textonly_baselines.run_tree_models(data, feats, res)` and notebook section 5 add random forest and histogram
