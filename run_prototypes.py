@@ -199,8 +199,10 @@ def report(output, reference, data, paths):
              "interaction_blend": "Previous + setup / punchline", "deberta_blend": "Previous + DeBERTa"}
     fig, axes = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
     labels = [names[name] for name in table.index]
-    for ax, col, title in zip(axes, ["test_ap", "test_precision_top10"], ["Test average precision", "Success rate in top-ranked 10%"]):
-        bars = ax.barh(labels, table[col], color=["#187a67" if name == selection["selected"] else "#6683ad" for name in table.index])
+    colors = ["#187a67" if name == selection["selected"] else "#6683ad" for name in table.index]
+    for ax, col, title in zip(axes, ["test_ap", "test_precision_top10"],
+                              ["Test average precision", "Success rate in top-ranked 10%"]):
+        bars = ax.barh(labels, table[col], color=colors)
         ax.invert_yaxis()
         ax.set_xlim(0, max(table[col]) * 1.2)
         ax.set_title(title)
@@ -214,11 +216,19 @@ def report(output, reference, data, paths):
              "| Model | Validation AP | Jul–Dec gate AP | Test AP | Test top-10% success |",
              "|---|---:|---:|---:|---:|"]
     for name, row in table.iterrows():
-        lines.append(f"| {names[name]} | {row.val_ap:.4f} | {row.gate_ap:.4f} | {row.test_ap:.4f} | {row.test_precision_top10:.1%} |")
-    lines += ["", "AP is average precision (called PR-AUC elsewhere in the repo). Top-10% success is precision among the highest-ranked tenth, not accuracy.",
-              "", "New prototypes use single-seed runs; the reference averages three seeds. Neural checkpoints use full-2024 validation AP. Blend weights use Jan–Jun only; Jul–Dec gates replacement at +0.002 AP. That gate is not untouched because neural checkpoints and the old reference already used 2024.",
-              "", "Test has been inspected in earlier project work. These are exploratory historical comparisons, not a fresh prospective benchmark. Paired week-bootstrap intervals in uncertainty.json do not include model-selection uncertainty.",
-              "", "A candidate is not promoted because it happens to have the best historical test score. Read selection.json for the frozen validation decision."]
+        lines.append(f"| {names[name]} | {row.val_ap:.4f} | {row.gate_ap:.4f} | {row.test_ap:.4f} "
+                     f"| {row.test_precision_top10:.1%} |")
+    lines += ["", "AP is average precision (called PR-AUC elsewhere in the repo). "
+              "Top-10% success is precision among the highest-ranked tenth, not accuracy.",
+              "", "New prototypes use single-seed runs; the reference averages three seeds. "
+              "Neural checkpoints use full-2024 validation AP. Blend weights use Jan–Jun only; "
+              "Jul–Dec gates replacement at +0.002 AP. That gate is not untouched because neural checkpoints "
+              "and the old reference already used 2024.",
+              "", "Test has been inspected in earlier project work. These are exploratory historical comparisons, "
+              "not a fresh prospective benchmark. Paired week-bootstrap intervals in uncertainty.json "
+              "do not include model-selection uncertainty.",
+              "", "A candidate is not promoted because it happens to have the best historical test score. "
+              "Read selection.json for the frozen validation decision."]
     (destination / "SUMMARY.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(table.round(4).to_string(), flush=True)
     print(f"Report: {destination}", flush=True)

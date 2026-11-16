@@ -1,0 +1,32 @@
+# VCL environment profiles. Select one with `python -m vcl up <name>`.
+#
+# image:                VCL image id, exact name, or a unique substring of the name.
+#                       Find real names with `python -m vcl images --search <text>`.
+# length_minutes:       reservation length (override per run with --length). VCL caps
+#                       this by your user group's max; it is typically rounded to 15/30 min.
+# wait_timeout_minutes: how long `up` waits for the instance to become ready.
+# ssh_user:             optional; overrides the user VCL reports for the inventory.
+#
+# Override this file with ./vcl_environments.yaml, $VCL_ENV_FILE, or --env-file.
+
+environments:
+  gpu-train:
+    description: GPU instance (RTX 2080 Ti) for model training
+    image: "Ubuntu 22 GPU with Cuda (GeForce RTX 2080 Ti)"
+    length_minutes: 240
+    wait_timeout_minutes: 30
+
+  gpu-train-large:
+    description: GPU instance (NVIDIA L40S, 48 GB, 90 GB RAM, 16 cores) for large models
+    # VCL has only 2 L40S GPUs, so a reservation may wait. The image allows 24 h; student accounts cap at 10 h.
+    image: "Ubuntu 24 GPU with Cuda (NVIDIA L40S)"
+    length_minutes: 600
+    wait_timeout_minutes: 30
+
+  gpu-eval:
+    description: GPU instance for evaluation on the held-out test set
+    image: "Ubuntu 22 GPU with Cuda (GeForce RTX 2080 Ti)"
+    length_minutes: 120
+    wait_timeout_minutes: 30
+
+  # Add a CPU profile (for smoke tests) once its image name is known; the loader rejects an empty image.

@@ -323,9 +323,11 @@ def train(spec, train_frame, val_frame, output, device=None, resume=False, check
         export_best(net, output, best_saved, val_frame)
         del best_saved
 
+    # net and optimizer are deleted at the end of train(), after the last snapshot() call
     def snapshot(epoch, offset, batches, total_loss, seen):
-        recovery.atomic_save({"identity": identity, "device": device, "model": net.state_dict(),
-            "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(), "scaler": scaler.state_dict(),
+        recovery.atomic_save({"identity": identity, "device": device, "model": net.state_dict(),  # noqa: F821
+            "optimizer": optimizer.state_dict(),  # noqa: F821
+            "scheduler": scheduler.state_dict(), "scaler": scaler.state_dict(),
             "epoch": epoch, "offset": offset, "batches": batches, "total_loss": total_loss, "seen": seen,
             "history": history, "best": best, "elapsed": elapsed_before + time.monotonic() - start,
             "order_rng": rng.bit_generator.state, "random": recovery.random_state(device),

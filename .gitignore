@@ -8,3 +8,8 @@ __pycache__/
 
 # Secrets (HF_TOKEN)
 .env
+
+# VCL provisioning state / generated inventories
+.vcl_state.json
+*.vcl.ini
+vcl_inventory.ini

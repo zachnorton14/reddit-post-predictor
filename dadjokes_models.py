@@ -57,17 +57,25 @@ class Config:
 
 # ---------------------------------------------------------------- data
 
-def load(cfg):
-    """All labeled text posts of one subreddit, split by time. Cached as Parquet per subreddit."""
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path = CACHE_DIR / f"{cfg.subreddit}.parquet"
-    if not path.exists():
-        bcfg = tb.Config(source=f"data/textonly/data/{cfg.subreddit}/*/*.parquet", train_end=cfg.train_end,
-                         val_end=cfg.val_end, max_train_per_sub=10**9, max_eval_per_sub=10**9)
+def load(cfg, source=None):
+    """All labeled text posts of one subreddit, split by time. Cached as Parquet per subreddit.
+
+    With `source` (a Parquet glob, e.g. a pinned Hugging Face download), read it and skip the cache.
+    """
+    def labeled(src):
+        bcfg = tb.Config(source=src, train_end=cfg.train_end, val_end=cfg.val_end, max_train_per_sub=10**9,
+                         max_eval_per_sub=10**9)
         d = tb.load_data(bcfg)
-        pd.concat([d.train.assign(split="train"), d.val.assign(split="val"), d.test.assign(split="test")]) \
-            .to_parquet(path)
-    df = pd.read_parquet(path)
+        return pd.concat([d.train.assign(split="train"), d.val.assign(split="val"), d.test.assign(split="test")])
+
+    if source:
+        df = labeled(source)
+    else:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        path = CACHE_DIR / f"{cfg.subreddit}.parquet"
+        if not path.exists():
+            labeled(f"data/textonly/data/{cfg.subreddit}/*/*.parquet").to_parquet(path)
+        df = pd.read_parquet(path)
     df = df[(df.split != "train") | (df.created_at >= pd.Timestamp(cfg.train_start))]
     parts = {s: df[df.split == s].sort_values("created_at").reset_index(drop=True) for s in SPLITS}
     data = tb.Data(cfg, None, parts["train"], parts["val"], parts["test"])
@@ -206,14 +214,15 @@ def fit_hgb(data, extra=None, max_iter=600, learning_rate=0.05, max_leaf_nodes=3
 
 
 def finetune(data, model_name="sentence-transformers/all-MiniLM-L6-v2", max_len=96, batch_size=128, epochs=3,
-             lr=5e-5, patience=1, folds=None):
+             lr=5e-5, patience=1, folds=None, return_model=False):
     """Fine-tune a transformer encoder with a linear head to predict the target (squared error).
 
     Early stopping on validation Spearman. Returns predictions for train/val/test from the best epoch. With
     `folds`, the train predictions are out-of-fold (one model per fold), for stacking; that costs `folds` x time.
+    With `return_model`, out["model"] holds what predict_net() needs: net, tok, mu, sd, max_len, model_name.
     """
     import torch
-    from transformers import AutoModel, AutoTokenizer
+    from transformers import AutoTokenizer
 
     dev = device()
     tok = AutoTokenizer.from_pretrained(model_name)
@@ -221,30 +230,12 @@ def finetune(data, model_name="sentence-transformers/all-MiniLM-L6-v2", max_len=
     y_all = target(data).astype(np.float32)
     mu, sd = y_all.mean(), y_all.std()
 
-    class Net(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.enc = AutoModel.from_pretrained(model_name)
-            self.head = torch.nn.Linear(self.enc.config.hidden_size, 1)
-
-        def forward(self, ids, mask):
-            h = self.enc(input_ids=ids, attention_mask=mask).last_hidden_state
-            pooled = (h * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True)
-            return self.head(pooled).squeeze(-1)
-
-    def batches(txt, size):
-        for i in range(0, len(txt), size):
-            b = tok(txt[i:i + size], truncation=True, max_length=max_len, padding=True, return_tensors="pt")
-            yield b["input_ids"].to(dev), b["attention_mask"].to(dev)
-
-    @torch.no_grad()
     def predict(net, txt):
-        net.eval()
-        return np.concatenate([net(i, m).float().cpu().numpy() for i, m in batches(txt, 512)]) * sd + mu
+        return predict_net(net, tok, txt, max_len, mu, sd)
 
     def train_one(tr_idx):
         torch.manual_seed(data.cfg.seed)
-        net = Net().to(dev)
+        net = regression_net(model_name).to(dev)
         opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=0.01)
         steps = epochs * (len(tr_idx) // batch_size + 1)
         sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=lr, total_steps=steps, pct_start=0.06)
@@ -289,4 +280,40 @@ def finetune(data, model_name="sentence-transformers/all-MiniLM-L6-v2", max_len=
     out = {"val": predict(net, texts["val"]), "test": predict(net, texts["test"])}
     out["train"] = oof if folds else predict(net, texts["train"])
     out["seconds"] = time.time() - t0
+    if return_model:
+        out["model"] = {"net": net, "tok": tok, "mu": float(mu), "sd": float(sd), "max_len": max_len,
+                        "model_name": model_name}
     return out
+
+
+def regression_net(model_name):
+    """Transformer encoder, mean-pooled, with a linear head that predicts the standardized target."""
+    import torch
+    from transformers import AutoModel
+
+    class Net(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.enc = AutoModel.from_pretrained(model_name)
+            self.head = torch.nn.Linear(self.enc.config.hidden_size, 1)
+
+        def forward(self, ids, mask):
+            h = self.enc(input_ids=ids, attention_mask=mask).last_hidden_state
+            pooled = (h * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True)
+            return self.head(pooled).squeeze(-1)
+
+    return Net()
+
+
+def predict_net(net, tok, txt, max_len, mu, sd, batch_size=512):
+    """Predictions of a regression_net() on the original target scale."""
+    import torch
+
+    dev = next(net.parameters()).device
+    net.eval()
+    out = []
+    with torch.no_grad():
+        for i in range(0, len(txt), batch_size):
+            b = tok(txt[i:i + batch_size], truncation=True, max_length=max_len, padding=True, return_tensors="pt")
+            out.append(net(b["input_ids"].to(dev), b["attention_mask"].to(dev)).float().cpu().numpy())
+    return np.concatenate(out) * sd + mu

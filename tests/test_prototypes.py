@@ -1,3 +1,4 @@
+# ruff: noqa: E402  (torch imports are skipped first when torch is missing)
 """Meaningful offline tests: gradients, checkpoint parity, chronology and isolation."""
 from dataclasses import replace
 import json
@@ -9,7 +10,11 @@ from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
-import torch
+import pytest
+
+# CI installs requirements-ci.txt (no torch); these tests run where torch is installed
+torch = pytest.importorskip("torch")
+pytest.importorskip("transformers")
 from transformers import BertConfig, BertModel, BertTokenizerFast, DebertaV2Config, DebertaV2Model
 
 import prototype_models as pm
@@ -39,7 +44,8 @@ class PrototypeTests(unittest.TestCase):
         cls.root = Path(cls.tmp.name)
         cls.source = cls.root / "tiny"
         cls.source.mkdir()
-        vocab = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]", "why", "did", "the", "chicken", "dad", "said", "hello", "because", "joke", "was", "funny"]
+        vocab = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]", "why", "did", "the", "chicken", "dad", "said", "hello",
+                 "because", "joke", "was", "funny"]
         (cls.source / "vocab.txt").write_text("\n".join(vocab))
         cls.tokenizer = BertTokenizerFast(vocab_file=str(cls.source / "vocab.txt"))
         cls.tokenizer.save_pretrained(cls.source)
