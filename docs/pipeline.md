@@ -27,7 +27,8 @@ How to name, change and ship a model: `.claude/skills/model-release/SKILL.md`.
 
 - **GitHub-hosted** (`ubuntu-latest`) for everything except training.
 - **One self-hosted controller** (`csc519-201-host`, labels `self-hosted, Linux, X64`). It has no GPU. In the
-  `train-eval` job it reserves an RTX 2080 Ti instance with `python -m vcl up gpu-train` (PR #5), runs
+  `train-eval` job it reserves an L40S instance with `python -m vcl up gpu-train-large`. If no L40S is ready within
+  15 minutes (VCL has 2), it falls back to an RTX 2080 Ti (`gpu-train`) and `run.json` records which (`vcl_profile`). It runs
   `infra/ansible/train.yml` against it, copies the results back, and always runs `python -m vcl down`.
   VCL lets only the IP that requested the connection reach the instance, so all of this stays in one job on
   the controller.
