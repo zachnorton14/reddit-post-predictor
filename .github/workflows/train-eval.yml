@@ -111,8 +111,16 @@ jobs:
 
       - name: Reserve a GPU instance
         id: vcl
-        # Writes request_id, ip, user, port to $GITHUB_OUTPUT and .vcl_state.json.
-        run: python -m vcl up gpu-train --inventory vcl_inventory.ini
+        # Prefer the L40S (48 GB). VCL has only 2, so fall back to the RTX 2080 Ti (11 GB) when none is free.
+        # A failed `vcl up` ends its own reservation. Writes request_id, ip, user, port to $GITHUB_OUTPUT.
+        run: |
+          if python -m vcl up gpu-train-large --wait-timeout 15 --inventory vcl_inventory.ini; then
+            echo "profile=gpu-train-large" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::No L40S available; using the RTX 2080 Ti (gpu-train)"
+            python -m vcl up gpu-train --inventory vcl_inventory.ini
+            echo "profile=gpu-train" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Train and evaluate on the instance
         env:
@@ -135,7 +143,7 @@ jobs:
           cat > artifacts/run.json <<EOF
           {"commit": "${{ github.sha }}",
            "dataset": "$DATASET", "dataset_revision": "${{ steps.data.outputs.revision }}",
-           "image": "${{ needs.image.outputs.ref }}", "provider": "vcl", "hf_path": "$path",
+           "image": "${{ needs.image.outputs.ref }}", "provider": "vcl", "vcl_profile": "${{ steps.vcl.outputs.profile }}", "hf_path": "$path",
            "run_id": ${{ github.run_id }}}
           EOF
 
@@ -178,7 +186,11 @@ jobs:
           .venv/bin/pip install -q -r vcl/requirements.txt ansible-core
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - name: Reserve a GPU instance
-        run: python -m vcl up gpu-train --length 60 --inventory vcl_inventory.ini
+        # Same order as train-eval: L40S first, then the RTX 2080 Ti
+        run: |
+          python -m vcl up gpu-train-large --length 60 --wait-timeout 15 --inventory vcl_inventory.ini || {
+            echo "::warning::No L40S available; using the RTX 2080 Ti (gpu-train)"
+            python -m vcl up gpu-train --length 60 --inventory vcl_inventory.ini; }
       - name: Write the SSH key
         env:
           VCL_SSH_KEY: ${{ secrets.VCL_SSH_KEY }}
