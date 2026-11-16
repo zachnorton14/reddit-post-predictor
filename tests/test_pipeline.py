@@ -65,6 +65,19 @@ class EvaluateTest(unittest.TestCase):
         self.assertEqual(result["n_test"], 200)
         self.assertFalse(any(f.name != "model.json" for f in self.model.iterdir()))
 
+    def test_val_split_scores_validation(self):
+        self.data.val = fake_test_split(120)
+        fake = mock.Mock(side_effect=lambda d, m, data: data.test.metric_pct.to_numpy())
+        (self.model / "model.json").write_text(json.dumps({"type": "fake"}))
+        with mock.patch.object(evaluate, "load_pinned", return_value=self.data), \
+                mock.patch.dict(evaluate.LOADERS, {"fake": fake}, clear=True):
+            evaluate.main(["--model", str(self.model), "--dataset", "o/d", "--revision", "abc", "--out", str(self.out),
+                           "--split", "val"])
+        result = json.loads(self.out.read_text())
+        self.assertEqual(result["n_val"], 120)
+        self.assertNotIn("n_test", result)
+        self.assertEqual(len(self.data.test), 200)  # the caller's data is not changed
+
     def test_unknown_type_fails_clearly(self):
         with self.assertRaises(SystemExit) as e:
             self.run_evaluate({"type": "nope"}, {"fake": mock.Mock()})
