@@ -1,5 +1,42 @@
 # Project notes: EDA and baselines (handoff)
 
+## Update 2026-11-16: input length, timing embeddings and attention pooling (MiniLM ladder)
+
+Question: does the fine-tuned encoder lose signal by truncating posts, by reading timing as raw numbers, or by
+averaging all token vectors into one? Code: `prototype_models.py` (new `Spec` options `pooling`, `queries`,
+`time_embed`) and `run_pooling.py` (ladder; `--dataset/--revision` for pinned data). Results:
+`results/pooling/val_metrics.csv`.
+
+- **Setup:** all-MiniLM-L6-v2 with Owen's prototype head (16 metadata features, 128-unit ReLU, MSE on standardized
+  log engagement). Train 2019–2023 (174,043 posts), validation 2024 (29,760). 3 epochs, lr 3e-5, effective batch
+  128, best epoch by validation AP (epoch 2 in every run). Apple M3 Max (MPS, fp32), about 3 min per epoch.
+  **Test was not loaded or scored.**
+- **Truncation:** at 96 tokens 3.2% of dadjokes posts are cut; at 256 tokens with the full body, 0.2%.
+- **Timing embeddings:** learned vectors for local hour (8), weekday (4) and month (4) replace the three
+  standardized columns, so 11pm and midnight are no longer at opposite ends of one number.
+- **Attention pooling:** K learned queries each take a softmax-weighted average of the last-layer token vectors;
+  the head reads all K. Queries start at zero, which equals mean pooling.
+
+Seed 42, one change per rung (validation AP): base 0.2481; + 256 tokens and full body 0.2498; + timing embeddings
+0.2533; + attention pooling with 1 / 4 / 10 queries 0.2530 / 0.2535 / 0.2531.
+
+Three seeds (42, 43, 44), validation:
+
+| Rung | AP mean ± SD | Top-10% hit | Spearman |
+|---|---:|---:|---:|
+| base (96 tokens, mean pooling) | 0.2440 ± 0.0059 | 28.8% | 0.363 |
+| + 256 tokens, full body, timing embeddings | 0.2469 ± 0.0055 | 28.7% | 0.358 |
+| + attention pooling, 4 queries | **0.2506 ± 0.0034** | 29.2% | 0.367 |
+
+- Attention pooling (4 queries) beat the timing-only rung on every seed (+0.0003, +0.0066, +0.0039) and the base
+  on every seed (mean +0.0066 AP). It is the most consistent change, but small: seed SD is about 0.005 AP and the
+  top-10% hit rate barely moves.
+- Longer inputs + timing embeddings vs. base is mixed (+0.0051, +0.0074, −0.0037): not established.
+- Seed 42 alone suggested attention pooling did nothing; the extra seeds reversed that. Use at least 3 seeds for
+  changes of this size.
+- Next: `deberta_large_attn4` (256 tokens, timing embeddings, 4-query attention) on a VCL L40S through the experiment
+  workflow (PR #24), one seed first to measure time. Compare with Owen's DeBERTa-base (validation AP 0.2569).
+
 ## Update 2026-11-15: DeBERTa interruption recovery
 
 DeBERTa finished epoch one (2024 validation AP 0.24697, top-10% precision 29.10%)
