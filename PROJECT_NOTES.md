@@ -1,5 +1,37 @@
 # Project notes: EDA and baselines (handoff)
 
+## Update 2026-11-17: a context-free "good post" score
+
+Question: can the model say whether a post is good, whatever its luck? Code: `prototype_models.CONTEXT`,
+`typical_context`, `neutral_context`, and `scripts/good_post_check.py`. Results: `results/good_post/`.
+
+- **Score:** the `minilm_attn4` seed-42 prediction with the posting context fixed to the most typical training
+  values (12:00, Saturday, July, median subreddit activity, no author flair, median author post count). Only the
+  post itself changes the score. Reported as a percentile of 2024 validation scores.
+- **Check:** 2024 validation only. 1,541 posts are copies of 588 jokes that appear more than once in 2024. For each,
+  the target is the mean engagement percentile of the other copies, so one post's luck is averaged out.
+
+| Predictor of the other copies' mean | Spearman |
+|---|---:|
+| this copy's own result (what actually happened) | 0.396 |
+| full model prediction (with real context) | 0.345 |
+| quality score (context fixed) | 0.359 |
+
+| Quality band | Posts | Top-10% rate | Median outcome percentile |
+|---|---:|---:|---:|
+| bad (bottom 30%) | 8,928 | 3.3% | 31% |
+| average (30–70%) | 11,904 | 7.7% | 50% |
+| good (70–90%) | 5,952 | 14.8% | 63% |
+| great (top 10%) | 2,976 | 29.7% | 77% |
+
+What it means:
+- Fixing the context costs almost nothing against a post's own result (Spearman 0.357 against 0.364 for the full
+  model) and predicts a joke's average across copies better than the full model does (0.359 against 0.345).
+- It does not yet beat one real outcome (0.396). The score is a fair "good or bad" read, not a guarantee.
+- The bands separate well: a "great" post reaches the top 10% nine times as often as a "bad" one (29.7% against
+  3.3%).
+- One seed of MiniLM. Next: the same check with DeBERTa-large weights, which had higher Spearman (0.423).
+
 ## Update 2026-11-17: how much posting-time signal is left (ceiling check)
 
 Question: is there signal the model is missing, or is it near what text and posting-time data allow? Script:
