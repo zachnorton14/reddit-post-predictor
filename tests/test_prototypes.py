@@ -84,6 +84,13 @@ class PrototypeTests(unittest.TestCase):
         self.assertEqual(self.tokenizer.truncation_side, "right")
         self.assertGreater(len(body["input_ids"][1]), 0)
 
+    def test_half_precision_checkpoint_loads_as_float32(self):
+        source = self.root / "tiny_fp16"
+        BertModel(BertConfig(vocab_size=16, hidden_size=16, num_hidden_layers=1, num_attention_heads=2,
+                             intermediate_size=32)).half().save_pretrained(source)
+        net = pm.Network(replace(self.spec(), source=str(source)))
+        self.assertEqual({p.dtype for p in net.parameters()}, {torch.float32})
+
     def test_deberta_checkpointing_accumulates_gradients(self):
         source = self.root / "tiny_deberta"
         model = DebertaV2Model(DebertaV2Config(vocab_size=16, hidden_size=16,

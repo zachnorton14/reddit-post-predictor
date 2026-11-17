@@ -130,7 +130,9 @@ class Network(nn.Module):
         if spec.pooling not in ("mean", "attention") or spec.queries < 1:
             raise ValueError(f"Unknown pooling: {spec.pooling} with {spec.queries} queries")
         self.spec = spec
-        self.encoder = AutoModel.from_pretrained(source or spec.source, local_files_only=True)
+        # float32 master weights: transformers 5 keeps a checkpoint's stored dtype, and DeBERTa-v3 is stored in fp16,
+        # which overflows to a non-finite loss under training. Autocast still runs the forward pass in bf16 on CUDA.
+        self.encoder = AutoModel.from_pretrained(source or spec.source, local_files_only=True, dtype=torch.float32)
         if spec.checkpointing:
             self.encoder.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         width = self.encoder.config.hidden_size
