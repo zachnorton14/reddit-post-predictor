@@ -1,0 +1,36 @@
+# End VCL reservations that a pipeline job reserved but couldn't end (the controller crashed or lost the runner
+# connection mid-job). Only reservations in the controller's ledger are touched (scripts/vcl_ledger.py), never
+# ones people make by hand.
+name: vcl-cleanup
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: vcl-cleanup
+  cancel-in-progress: true
+
+jobs:
+  sweep:
+    runs-on: [self-hosted, Linux]
+    environment: vcl
+    timeout-minutes: 10
+    env:
+      VCL_TOKEN: ${{ secrets.VCL_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: End leftover reservations
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -q -r vcl/requirements.txt
+          .venv/bin/python scripts/vcl_ledger.py sweep

@@ -1,0 +1,233 @@
+# Run research experiments on a VCL GPU: every run listed in experiments/<name>.yaml, scored on validation only.
+#
+#   plan (hosted) ──► image (hosted) ──► experiment (self-hosted controller) ──► report (hosted)
+#
+# Starts on a push to a feature branch that adds or changes experiments/*.yaml, or by hand:
+#   gh workflow run experiment.yml --ref <branch> -f config=experiments/<name>.yaml
+# One reservation runs all changed configs in order (L40S; RTX 2080 Ti only if a config sets allow_fallback).
+# Each finished run goes to the HF models repo at experiments/<config>/<short commit>/<model>_s<seed>/ (weights
+# included). The PR gets a table with each run's validation scores next to the deployed champion's. Advisory only:
+# nothing here touches test or blocks a merge. Format and runner contract: pipeline/experiment.py.
+name: experiment
+
+on:
+  push:
+    # Push events only come from people with write access, so self-hosted jobs never run code from forks.
+    branches-ignore: [dev, release, main]
+    paths: ["experiments/*.yaml"]
+  workflow_dispatch:
+    inputs:
+      config:
+        description: Config to run, for example experiments/deberta_large.yaml
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# A newer push to the same branch replaces its queued run; a running one finishes. GPU jobs from different
+# workflows don't overlap because the one self-hosted controller runs one job at a time.
+concurrency:
+  group: experiment-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}/train
+  DATASET: zachnorton03/textonly-subreddit-predictors
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      configs: ${{ steps.find.outputs.configs }}
+      fallback: ${{ steps.find.outputs.fallback }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Find the configs to run
+        id: find
+        env:
+          INPUT_CONFIG: ${{ inputs.config }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ -n "$INPUT_CONFIG" ]; then
+            configs="$INPUT_CONFIG"
+          else
+            # A new branch has no "before" commit: compare with where it left dev
+            base="$BEFORE"
+            if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+              base=$(git merge-base origin/dev HEAD)
+            fi
+            configs=$(git diff --name-only --diff-filter=AM "$base" HEAD -- 'experiments/*.yaml' | tr '\n' ' ')
+          fi
+          configs=$(echo $configs)
+          if [ -z "$configs" ]; then echo "No changed configs to run."; exit 0; fi
+          pip install -q pyyaml
+          python -m pipeline.experiment --check $configs
+          fallback=$(python -c "import sys; from pipeline.experiment import load_config as l
+          print(str(any(l(c)['allow_fallback'] for c in sys.argv[1:])).lower())" $configs)
+          echo "configs=$configs" >> "$GITHUB_OUTPUT"
+          echo "fallback=$fallback" >> "$GITHUB_OUTPUT"
+
+  image:
+    needs: plan
+    if: needs.plan.outputs.configs != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      ref: ${{ steps.tag.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Tag the image by the files that define it (same tag as train-eval)
+        id: tag
+        run: |
+          ref="${IMAGE,,}:${{ hashFiles('docker/train.Dockerfile', 'requirements.txt', '*.py', 'pipeline/**') }}"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check whether the image exists
+        id: exists
+        run: |
+          if docker manifest inspect "${{ steps.tag.outputs.ref }}" > /dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.exists.outputs.found != 'true'
+        uses: docker/setup-buildx-action@v3
+      - if: steps.exists.outputs.found != 'true'
+        name: Build and push the training image
+        run: docker buildx build -f docker/train.Dockerfile --push -t "${{ steps.tag.outputs.ref }}" .
+
+  experiment:
+    needs: [plan, image]
+    runs-on: [self-hosted, Linux]
+    environment: vcl
+    # A student L40S reservation lasts at most 600 minutes. Stop 10 minutes early so the reservation can be ended.
+    timeout-minutes: 590
+    permissions:
+      contents: read
+      packages: read
+    env:
+      VCL_TOKEN: ${{ secrets.VCL_TOKEN }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      GHCR_USER: ${{ github.actor }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ANSIBLE_HOST_KEY_CHECKING: "False"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up tools
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -q -r vcl/requirements.txt ansible-core "huggingface_hub>=0.25"
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Pin the dataset revision for this run
+        id: data
+        run: |
+          rev=$(python -c "from huggingface_hub import HfApi; print(HfApi().dataset_info('$DATASET').sha)")
+          echo "revision=$rev" >> "$GITHUB_OUTPUT"
+
+      - name: Reserve a GPU instance
+        id: vcl
+        env:
+          FALLBACK: ${{ needs.plan.outputs.fallback }}
+        run: |
+          if python -m vcl up gpu-train-large --length 600 --wait-timeout 30 --inventory vcl_inventory.ini; then
+            echo "profile=gpu-train-large" >> "$GITHUB_OUTPUT"
+          elif [ "$FALLBACK" = "true" ]; then
+            echo "::warning::No L40S available; using the RTX 2080 Ti (gpu-train) because a config allows it"
+            python -m vcl up gpu-train --length 600 --inventory vcl_inventory.ini
+            echo "profile=gpu-train" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::No L40S available. Run again later, or set allow_fallback: true for base-size models."
+            exit 1
+          fi
+          python scripts/vcl_ledger.py add
+
+      - name: Write the SSH key
+        env:
+          VCL_SSH_KEY: ${{ secrets.VCL_SSH_KEY }}
+        run: |
+          key="$RUNNER_TEMP/vcl_key" && printf '%s\n' "$VCL_SSH_KEY" > "$key" && chmod 600 "$key"
+          echo "KEY=$key" >> "$GITHUB_ENV"
+
+      - name: Set up Docker and the GPU runtime on the instance
+        run: ansible-playbook -i vcl_inventory.ini --private-key "$KEY" infra/ansible/train.yml --tags setup
+
+      - name: Run the experiments on the instance
+        env:
+          CONFIGS: ${{ needs.plan.outputs.configs }}
+        run: |
+          mkdir -p summaries
+          # Leave time inside the job timeout to copy the summaries back and end the reservation
+          ansible-playbook -i vcl_inventory.ini --private-key "$KEY" infra/ansible/experiment.yml \
+            -e image="${{ needs.image.outputs.ref }}" -e dataset="$DATASET" \
+            -e revision="${{ steps.data.outputs.revision }}" -e commit="${{ github.sha }}" \
+            -e results_dir="$PWD/summaries" -e max_seconds=33600 \
+            -e "{\"configs\": $(python -c 'import json,os,sys; print(json.dumps([os.path.abspath(c) for c in sys.argv[1:]]))' $CONFIGS)}"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: experiment-summaries
+          path: summaries/
+          if-no-files-found: ignore
+
+      - name: End the reservation
+        if: always()
+        run: |
+          if [ -f .vcl_state.json ]; then
+            id=$(python -c "import json; print(json.load(open('.vcl_state.json'))['request_id'])")
+            python -m vcl down && python scripts/vcl_ledger.py remove "$id"
+          fi
+          rm -f vcl_inventory.ini .vcl_state.json "$KEY"
+
+  report:
+    needs: [plan, experiment]
+    if: always() && needs.plan.outputs.configs != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: experiment-summaries
+          path: summaries
+        continue-on-error: true
+      - name: Post the results on the pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RESULT: ${{ needs.experiment.result }}
+        run: |
+          {
+            echo "## Experiment results ($RESULT)"
+            echo
+            found=false
+            for f in summaries/*/summary.md; do
+              [ -f "$f" ] && { cat "$f"; echo; found=true; }
+            done
+            $found || echo "No summary came back. See the run log."
+            echo "[Run log]($RUN_URL)"
+          } > body.md
+          cat body.md >> "$GITHUB_STEP_SUMMARY"
+          pr=$(gh pr list --repo "${{ github.repository }}" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$pr" ]; then
+            gh pr comment "$pr" --repo "${{ github.repository }}" --body-file body.md
+          else
+            echo "No open pull request for $BRANCH; the table is in this run's summary."
+          fi

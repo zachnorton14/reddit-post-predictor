@@ -1,12 +1,15 @@
-"""Score a saved model on the test split of a pinned dataset revision.
+"""Score a saved model on the test split (or, with --split val, validation) of a pinned dataset revision.
 
-    python -m pipeline.evaluate --model <dir> --dataset <hf dataset repo> --revision <sha> --out <file>
+    python -m pipeline.evaluate --model <dir> --dataset <hf dataset repo> --revision <sha> --out <file> [--split val]
+
+The gate uses test. Experiments (pipeline/experiment.py) use val, so choosing among them never looks at test.
 
 Loads any past model by the `type` in <dir>/model.json, so the deployed champion can be scored with this code.
 Never writes into <dir> (the champion is mounted read-only).
 """
 
 import argparse
+import copy
 import json
 from pathlib import Path
 
@@ -35,14 +38,15 @@ def parse_args(argv=None):
     parser.add_argument("--dataset", required=True, help="Hugging Face dataset repo")
     parser.add_argument("--revision", required=True, help="dataset commit")
     parser.add_argument("--out", required=True, type=Path, help="metrics JSON file")
+    parser.add_argument("--split", choices=["test", "val"], default="test", help="split to score (default test)")
     return parser.parse_args(argv)
 
 
-def metrics(test, p):
-    s = dm.scores(test, p)
+def metrics(frame, p, split="test"):
+    s = dm.scores(frame, p)
     # compare_metrics.py gates on top10_hit_rate
     return {"pr_auc": float(s["pr_auc"]), "top10_hit_rate": float(s["top10_hit"]),
-            "spearman": float(s["spearman"]), "n_test": len(test)}
+            "spearman": float(s["spearman"]), f"n_{split}": len(frame)}
 
 
 def main(argv=None):
@@ -52,7 +56,11 @@ def main(argv=None):
         raise SystemExit(f"unknown model type {meta.get('type')!r} in {args.model}/model.json; "
                          f"known types: {', '.join(LOADERS)}")
     data = load_pinned(args.dataset, args.revision)
-    result = metrics(data.test, LOADERS[meta["type"]](args.model, meta, data))
+    if args.split == "val":
+        # Loaders predict data.test; point it at validation so the loaders need no split argument
+        data = copy.copy(data)
+        data.test = data.val
+    result = metrics(data.test, LOADERS[meta["type"]](args.model, meta, data), args.split)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, indent=2))
     print(json.dumps(result))

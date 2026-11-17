@@ -14,6 +14,7 @@ The model that ships today is a fine-tuned MiniLM on r/dadjokes. A CI/CD pipelin
 | Any change | this file |
 | Change the shipped model, `pipeline/`, or `MODEL_NAME` | `.claude/skills/model-release/SKILL.md` |
 | Workflows, VCL, secrets, Hugging Face storage | `docs/pipeline.md` |
+| Run research experiments on the GPU | `docs/pipeline.md` "Experiments", `pipeline/experiment.py` |
 | Experiments, results, past decisions | `PROJECT_NOTES.md` (newest first), `MODEL_LOG.md` |
 | Dataset checks and leakage rules | `validate_dataset.py`, `textonly_data.py` |
 
@@ -31,7 +32,7 @@ pip install -r requirements-ci.txt     # lint and tests only (what CI installs, 
 
 ## Branches and pull requests
 
-Flow: feature branch → `dev` → `release` (deploys). `main` is the default branch, but day-to-day work targets `dev`.
+Flow: feature branch → `dev` → `release` (deploys). `dev` is the default branch.
 
 - Branch from `origin/dev`. Name it `<your name>/<topic>`, for example `owen/deberta-pipeline`.
 - Open the PR into `dev`. Never push directly to `dev` or `release`.
@@ -110,6 +111,9 @@ These rules keep the results honest. Break them and the numbers mean nothing.
   RTX 2080 Ti (11 GB). Runs queue one at a time (concurrency group `vcl-gpu`).
   - A training job times out after 240 minutes.
   - An L40S trains the current MiniLM in about 6 minutes; a 2080 Ti takes about 15.
+- **Experiments:** list runs in `experiments/<name>.yaml` on a feature branch and push. Results come back as a
+  table on your PR (validation only). Measure a new model with one seed first. One push uses one reservation of up
+  to 10 hours, so don't push configs over and over. Details: `docs/pipeline.md` "Experiments".
 - **Modal (fallback, costs money):** `train-eval-modal.yml`, manual only. Use it only when VCL is down or the model
   needs more than VCL offers. Ask the repo owner first.
 - **Local:** fine for small subsets. `dadjokes_models.device()` picks CUDA, then Apple MPS, then CPU.
@@ -136,5 +140,5 @@ These rules keep the results honest. Break them and the numbers mean nothing.
 - Push to `dev`, `release` or `main`, merge a PR, or change branch protection.
 - Delete or rewrite someone else's branch. To update it, branch from it and open a new PR.
 - Change secrets, GitHub environments or workflow triggers.
-- Start paid compute (Modal), or start many VCL runs in a row.
+- Start paid compute (Modal), or start many VCL runs in a row (including pushing many experiment configs).
 - Promote a model on Hugging Face (`scripts/hf_models.py promote`), or delete anything in the HF repos.

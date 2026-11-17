@@ -113,14 +113,16 @@ jobs:
         id: vcl
         # Prefer the L40S (48 GB). VCL has only 2, so fall back to the RTX 2080 Ti (11 GB) when none is free.
         # A failed `vcl up` ends its own reservation. Writes request_id, ip, user, port to $GITHUB_OUTPUT.
+        # --length 240 matches the job timeout, so a reservation can't outlive its job by hours.
         run: |
-          if python -m vcl up gpu-train-large --wait-timeout 15 --inventory vcl_inventory.ini; then
+          if python -m vcl up gpu-train-large --length 240 --wait-timeout 15 --inventory vcl_inventory.ini; then
             echo "profile=gpu-train-large" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::No L40S available; using the RTX 2080 Ti (gpu-train)"
-            python -m vcl up gpu-train --inventory vcl_inventory.ini
+            python -m vcl up gpu-train --length 240 --inventory vcl_inventory.ini
             echo "profile=gpu-train" >> "$GITHUB_OUTPUT"
           fi
+          python scripts/vcl_ledger.py add
 
       - name: Train and evaluate on the instance
         env:
@@ -161,7 +163,10 @@ jobs:
       - name: End the reservation
         if: always()
         run: |
-          if [ -f .vcl_state.json ]; then python -m vcl down; fi
+          if [ -f .vcl_state.json ]; then
+            id=$(python -c "import json; print(json.load(open('.vcl_state.json'))['request_id'])")
+            python -m vcl down && python scripts/vcl_ledger.py remove "$id"
+          fi
           rm -f vcl_inventory.ini .vcl_state.json
           rm -rf champion
 

@@ -21,6 +21,8 @@ How to name, change and ship a model: `.claude/skills/model-release/SKILL.md`.
 | `train-eval.yml` | push to `dev` that changes model files; manual (`smoke: true` only checks VCL access) | hosted + self-hosted controller | builds training image, reserves a VCL GPU, trains, scores candidate and champion, uploads the candidate, gates |
 | `release-check.yml` | pull request into `release` | GitHub-hosted | requires a passing train-eval run for the newest model change (`scripts/find_candidate.sh`). Required on `release`. |
 | `train-eval-modal.yml` | manual only | GitHub-hosted | fallback: trains and evaluates on a Modal GPU, gates (see "Modal fallback") |
+| `experiment.yml` | push to a feature branch that changes `experiments/*.yaml`; manual (`-f config=...`) | hosted + self-hosted controller | runs every listed research run on a VCL L40S, validation only; stores each on HF; posts a table on the PR (see "Experiments"). Advisory, never blocks. |
+| `vcl-cleanup.yml` | every 30 minutes; manual | self-hosted controller | ends reservations that a pipeline job recorded but couldn't end (`scripts/vcl_ledger.py`) |
 | `deploy.yml` | push to `release` | GitHub-hosted | builds inference image from the gated model, deploys, publishes release `model-<n>`, promotes the champion |
 
 ## Runners
@@ -102,6 +104,54 @@ Models live in the private Hugging Face repo `zachnorton03/reddit-post-predictor
   even if a later run replaces the folder.
 - The next train-eval run downloads the champion at its tag and scores it again with the new `evaluate.py`.
   So a changed metric or dataset still compares like with like.
+
+## Experiments
+
+Research runs (new architectures, seeds, settings) go through `experiment.yml`, not `train-eval`. They're scored on
+2024 **validation only**, so choosing among many experiments never uses test. Test is used once, when a chosen
+model ships, by the blocking gate.
+
+1. On a feature branch, add `experiments/<name>.yaml` (format below, and in `pipeline/experiment.py`). Pushing the
+   branch starts the workflow. To re-run without a change: `gh workflow run experiment.yml --ref <branch> -f
+   config=experiments/<name>.yaml`.
+2. One L40S reservation (up to 10 hours) runs every listed run in order through the config's `runner` script.
+   Each finished run is uploaded from the GPU instance to `zachnorton03/reddit-post-predictor-models` at
+   `experiments/<name>/<short commit>/<model>_s<seed>/`, weights included (not `resume.pt` or
+   `best_checkpoint.pt`). A run that doesn't finish before the reservation ends is lost; a re-run on the same commit
+   skips runs already on HF.
+3. The workflow also scores the deployed champion on validation (`pipeline.evaluate --split val`). It posts a table
+   of every run next to the champion on the branch's open PR (or in the run summary if there's no PR).
+4. Write up the result in `PROJECT_NOTES.md` in the PR, by hand.
+
+```yaml
+runner: run_pooling.py          # script at the repo root that follows the runner contract
+runs:
+  - {model: deberta_attn4, seeds: [42, 43, 44]}
+  - {model: deberta_large_attn4, seeds: [42]}
+epochs: 3                       # optional
+allow_fallback: false           # optional; true allows the RTX 2080 Ti when no L40S is free (base-size models)
+```
+
+**Runner contract.** Called once per run, from the repo root, in the training image:
+`python <runner> --models <model> --seeds <seed> --output <dir>/runs --results <dir>/results --resume --dataset
+<repo> --revision <sha> [--epochs N]`. It must load data only from the pinned revision, never load or score test,
+and write `<dir>/runs/<model>_s<seed>/best.json` with `ap`, `precision_top10` and `spearman`.
+
+**Timing.** Measure a new model with one seed before listing many. A config that doesn't fit in about 9 hours
+needs splitting. The self-hosted controller runs one job at a time, so a long experiment delays `train-eval` on
+`dev` until it ends.
+
+**Shipping a winner** (planned): a person names the chosen run in a PR. The gate on the `dev` → `release` PR scores
+those saved weights and the champion on test, with no retraining, and blocks if the candidate is worse. Until that
+exists, ship through `pipeline/train.py` as described in the model-release skill.
+
+## VCL reservations
+
+Every job ends its reservation in an `always()` step, including on failure, cancel and timeout. If the controller
+crashes mid-job, that step can't run. So jobs record each reservation in a ledger on the controller
+(`~/.vcl-pipeline/`, `scripts/vcl_ledger.py`), and `vcl-cleanup.yml` ends any recorded reservation whose workflow run
+has finished. Reservations made by hand aren't in the ledger and are never touched. `train-eval` also reserves
+only 240 minutes, matching its timeout.
 
 ## Modal fallback
 
