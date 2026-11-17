@@ -1,29 +1,31 @@
 # CI/CD pipeline
 
-Branch flow: feature branch → `dev` → `release` → automatic deploy.
+Branch flow: feature branch → `dev` → `release` → automatic deploy. A model is trained once and then only scored.
 
-1. **Pull request into `dev`:** CI (Ruff, pytest) must pass. Dataset validation runs when dataset code changes.
-   No training.
-2. **Push to `dev`** (the merge) that changes model files (`*.py` at the root, `pipeline/`,
-   `docker/train.Dockerfile`, `requirements.txt`): `train-eval` trains a candidate on a VCL GPU, scores it and
-   the deployed champion on the same test data, and gates it. The result attaches to that commit.
-3. **Pull request `dev` → `release`:** `release-check` must pass. It finds the passing train-eval run for the
-   newest model change on the branch. Commits that change only docs or workflows reuse that run. Nothing is
-   retrained.
-4. **Push to `release`** (the merge): `deploy` ships that run's candidate and makes it the champion.
+1. **Experiment, on a feature branch:** push `experiments/<name>.yaml`. `experiment` trains each listed run on a
+   VCL GPU, scores it on validation, stores the weights on Hugging Face and posts a table on the PR.
+2. **Choose:** name the chosen run's folder in `candidate.yaml` (choose on validation, never on test).
+3. **Pull request into `dev`:** CI (Ruff, pytest) must pass. Dataset validation runs when dataset code changes.
+   Merging uses no GPU and trains nothing.
+4. **Pull request `dev` → `release`:** `release-check` downloads the `candidate.yaml` folder at a pinned Hugging Face
+   revision and scores it and the deployed champion on the same test data. It blocks the merge if the candidate is
+   worse. Nothing is trained.
+5. **Push to `release`** (the merge): `deploy` ships exactly the revision the check scored and makes it the
+   champion.
 
-How to name, change and ship a model: `.claude/skills/model-release/SKILL.md`.
+`train-eval` (retrain `pipeline/train.py`'s model) is now manual only. How to name, change and ship a model:
+`.claude/skills/model-release/SKILL.md`.
 
 | Workflow | Trigger | Runner | What it does |
 |---|---|---|---|
 | `ci.yml` | pull request into `dev`; manual | GitHub-hosted | Ruff, pytest. Required on `dev`. |
 | `data-validation.yml` | pull request into `dev` that changes dataset code; Hugging Face webhook relay; manual | GitHub-hosted | validates the dataset |
-| `train-eval.yml` | push to `dev` that changes model files; manual (`smoke: true` only checks VCL access) | hosted + self-hosted controller | builds training image, reserves a VCL GPU, trains, scores candidate and champion, uploads the candidate, gates |
-| `release-check.yml` | pull request into `release` | GitHub-hosted | requires a passing train-eval run for the newest model change (`scripts/find_candidate.sh`). Required on `release`. |
+| `train-eval.yml` | manual only (`smoke: true` only checks VCL access) | hosted + self-hosted controller | retrains `pipeline/train.py`'s model on a VCL GPU, scores it and the champion, uploads it to `models/<name>/`, gates (advisory) |
+| `release-check.yml` | pull request from `dev` into `release` (`pull_request_target`) | hosted + self-hosted controller | scores the `candidate.yaml` model and the champion on test on a VCL GPU, no training; uploads `release-<head sha>` on a pass. Job `trained-candidate` is required on `release`. |
 | `train-eval-modal.yml` | manual only | GitHub-hosted | fallback: trains and evaluates on a Modal GPU, gates (see "Modal fallback") |
 | `experiment.yml` | push to a feature branch that changes `experiments/*.yaml`; manual (`-f config=...`) | hosted + self-hosted controller | runs every listed research run on a VCL L40S, validation only; stores each on HF; posts a table on the PR (see "Experiments"). Advisory, never blocks. |
 | `vcl-cleanup.yml` | every 30 minutes; manual | self-hosted controller | ends reservations that a pipeline job recorded but couldn't end (`scripts/vcl_ledger.py`) |
-| `deploy.yml` | push to `release` | GitHub-hosted | builds inference image from the gated model, deploys, publishes release `model-<n>`, promotes the champion |
+| `deploy.yml` | push to `release` | GitHub-hosted | downloads the weights at the revision `release-check` scored, builds the inference image, deploys, publishes release `model-<n>`, promotes the champion |
 
 ## Runners
 
@@ -36,9 +38,14 @@ How to name, change and ship a model: `.claude/skills/model-release/SKILL.md`.
   the controller.
 - The controller needs `git` and outbound SSH. The jobs get Python from `actions/setup-python`. The job installs `ansible-core`,
   `pyyaml` and `huggingface_hub` into `.venv` in its workspace.
-- The repo is public. The self-hosted jobs run only on pushes to `dev` and manual runs, never on pull
-  requests, so fork code never reaches the controller. Also set Settings → Actions → General → "Require
-  approval for all outside collaborators".
+- The repo is public. Self-hosted jobs run only on pushes by people with write access, manual runs, schedules
+  and `release-check`. `release-check` uses `pull_request_target`: GitHub runs the workflow file from `release`,
+  not from the pull request, and the jobs run only when the pull request comes from this repo's `dev`. So fork
+  code never reaches the controller. Also set Settings → Actions → General → "Require approval for all outside
+  collaborators".
+- `pull_request_target` uses the copy of `release-check.yml` on `release`. A change to it takes effect after it is
+  merged into `release`. The first time, `release` doesn't have it yet: the repo owner merges that first
+  `dev` → `release` pull request without the check (or adds the file to `release` first).
 
 ## Secrets
 
@@ -82,28 +89,34 @@ Files marked *(exists)* are in the repo; the rest do not exist yet. Each owner c
 | `infra/ansible/train.yml` *(exists)* | needs passwordless sudo for the VCL user; on the `vcl` inventory group: installs Docker and the NVIDIA container toolkit if needed; logs in to GHCR with `$GHCR_USER`/`$GHCR_TOKEN` (`lookup('env', ...)`); runs `pipeline.train`, then `pipeline.evaluate` on the candidate and (if `champion_dir` is set) on the champion, in `{{ image }}` with `$HF_TOKEN`; copies `model/`, `metrics.json` and `champion_metrics.json` to `{{ artifacts_dir }}` on the controller. Extra vars: `image`, `dataset`, `revision`, `artifacts_dir`, optional `champion_dir`. |
 | `docker/train.Dockerfile` | CUDA training environment with the repo code |
 | `pipeline/train.py` | `--dataset <repo> --revision <sha> --out <dir>`; writes the model to `<dir>` with `<dir>/model.json`: `name` (the hand-set `MODEL_NAME`, format in the model-release skill), `type`, and anything the loader needs |
-| `pipeline/evaluate.py` | `--model <dir> --dataset <repo> --revision <sha> --out <file>`; loads any past model by its `model.json` `type`; writes JSON with at least `pr_auc` and `top10_hit_rate` on that revision's test split |
-| `docker/serve.Dockerfile` | inference image; `COPY model/` from the build context (the gated artifact) |
+| `pipeline/evaluate.py` | `--model <dir> --dataset <repo> --revision <sha> --out <file>`; loads any past model by its `model.json` `type` (`minilm`, `prototype`); writes JSON with at least `pr_auc` and `top10_hit_rate` on that revision's test split, and `rows` (hash of the scored post ids) |
+| `candidate.yaml` *(exists)* | `path` (HF folder with the weights), `name`, `type`. Checked by `scripts/hf_models.py candidate` |
+| `infra/ansible/gate.yml` *(exists)* | on the instance: downloads the candidate (`hf_models.py fetch`) and the champion, runs `pipeline.evaluate` on both, copies `metrics.json` and `champion_metrics.json` to `{{ results_dir }}`. Extra vars: `image`, `dataset`, `revision`, `candidate_path`, `candidate_revision`, `candidate_name`, `candidate_type`, `results_dir` |
+| `docker/serve.Dockerfile` | inference image; `COPY model/` from the build context (the scored weights, with `model.json`) |
 | `infra/deploy/deploy.sh <image>` | deploys the image to production |
 
 The gate (`scripts/compare_metrics.py`) compares the candidate with the champion, both scored in the same run
-by the same `evaluate.py` on the same test data. It fails if `pr_auc` or `top10_hit_rate` drops more than 0.01.
+by the same `evaluate.py` on the same test data. It fails if the two `rows` hashes differ (different posts). It fails if `pr_auc` or `top10_hit_rate` drops more than 0.01.
 With no champion yet, it passes. The gate checks "not worse", not "better": 0.01 is near the noise on the test
 split.
 
 ## Model storage
 
-Models live in the private Hugging Face repo `zachnorton03/reddit-post-predictor-models`
-(`scripts/hf_models.py`; the layout is in the repo's README).
+Models live in the Hugging Face repo `zachnorton03/reddit-post-predictor-models` (`scripts/hf_models.py`).
 
-- Every train-eval run uploads its candidate to `models/<name>/`, where `<name>` is `MODEL_NAME` from
-  `pipeline/train.py`: `model/` (with `model.json`), `metrics.json`, `champion_metrics.json` and `run.json`.
-  Retraining the same model replaces that folder.
-- Deploy promotes the candidate. It points `champion.json` at the folder and creates the git tag `model-<n>`
-  on the Hugging Face repo, which matches the GitHub release `model-<n>`. The tag keeps the champion's files
-  even if a later run replaces the folder.
-- The next train-eval run downloads the champion at its tag and scores it again with the new `evaluate.py`.
-  So a changed metric or dataset still compares like with like.
+- Experiment runs: `experiments/<config>/<short commit>/<model>_s<seed>/` (see "Experiments").
+- Manual train-eval runs: `models/<name>/`, where `<name>` is `MODEL_NAME` from `pipeline/train.py`: `model/`
+  (with `model.json`), `metrics.json`, `champion_metrics.json` and `run.json`. Retraining the same model replaces
+  that folder.
+- `candidate.yaml` names one such folder (`models/<name>/model` for a train-eval run). `release-check` pins the
+  repo's commit when it starts and scores the folder at that commit. `release.json` in its artifact records the
+  commit as `revision`.
+- Deploy downloads the folder at that `revision`, so it ships exactly what was scored. `promote` then adds
+  `release.json` (and `model.json`, which experiment runs lack) next to the weights, checks that the weights there
+  are unchanged from `revision`, tags that commit `model-<n>` and points `champion.json` at it
+  (`{version, name, type, path, commit, revision}`). `model-<n>` matches the GitHub release `model-<n>`.
+- The next check downloads the champion at its `revision` and scores it again with the new `evaluate.py`. So a
+  changed metric or dataset still compares like with like.
 
 ## Experiments
 
@@ -138,12 +151,12 @@ allow_fallback: false           # optional; true allows the RTX 2080 Ti when no 
 and write `<dir>/runs/<model>_s<seed>/best.json` with `ap`, `precision_top10` and `spearman`.
 
 **Timing.** Measure a new model with one seed before listing many. A config that doesn't fit in about 9 hours
-needs splitting. The self-hosted controller runs one job at a time, so a long experiment delays `train-eval` on
-`dev` until it ends.
+needs splitting. The self-hosted controller runs one job at a time, so a long experiment delays other GPU jobs
+(including `release-check`) until it ends.
 
-**Shipping a winner** (planned): a person names the chosen run in a PR. The gate on the `dev` → `release` PR scores
-those saved weights and the champion on test, with no retraining, and blocks if the candidate is worse. Until that
-exists, ship through `pipeline/train.py` as described in the model-release skill.
+**Shipping a winner:** set `candidate.yaml` to the run's folder, `name` and `type: prototype` on a feature branch,
+merge it into `dev`, then open `dev` → `release`. `release-check` scores those saved weights and the champion on
+test, with no retraining, and blocks if the candidate is worse.
 
 ## VCL reservations
 
@@ -151,7 +164,7 @@ Every job ends its reservation in an `always()` step, including on failure, canc
 crashes mid-job, that step can't run. So jobs record each reservation in a ledger on the controller
 (`~/.vcl-pipeline/`, `scripts/vcl_ledger.py`), and `vcl-cleanup.yml` ends any recorded reservation whose workflow run
 has finished. Reservations made by hand aren't in the ledger and are never touched. `train-eval` also reserves
-only 240 minutes, matching its timeout.
+only 240 minutes and `release-check` 120, matching their timeouts.
 
 ## Modal fallback
 
@@ -161,9 +174,8 @@ only 240 minutes, matching its timeout.
 
 - Manual only. Pick the GPU when you start the run (default `L40S`). The function times out after 10 hours.
 - It uploads the same `candidate` artifact and runs the same gate, and `run.json` records `"provider": "modal"`.
-- It does not satisfy `release-check`, and `deploy.yml` deploys only models from `train-eval.yml` runs on
-  `dev`. A Modal model is for comparison until the deploy is changed to accept it.
-- Its gate compares with the champion's stored metrics. It does not score the champion again.
+- It uploads to `models/<name>/` like `train-eval`, so `candidate.yaml` can name it (`models/<name>/model`).
+- Its gate compares with the champion's stored metrics (`release.json`). It does not score the champion again.
 - Models trained on different GPUs score slightly differently. Compare against the provider in `run.json`.
 
 One-time setup, only if the fallback is used:

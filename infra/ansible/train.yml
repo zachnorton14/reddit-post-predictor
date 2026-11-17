@@ -117,7 +117,7 @@
         # Champion vs. challenger: score the deployed model with this commit's evaluate.py on the same test data.
         - name: Copy the champion to the instance
           ansible.builtin.copy:
-            src: "{{ champion_dir }}/model/"
+            src: "{{ champion_dir }}/"
             dest: "{{ workdir }}/champion/"
             mode: preserve
           when: champion_dir | default('') | length > 0

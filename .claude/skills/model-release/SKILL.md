@@ -1,62 +1,60 @@
 ---
 name: model-release
-description: Name, change or ship the model that the CI/CD pipeline trains. Use when editing pipeline/train.py, switching the shipped model, setting MODEL_NAME or model.json, or asking how a model gets from a branch to production.
+description: Name, change or ship the model that the CI/CD pipeline deploys. Use when editing candidate.yaml, pipeline/train.py or pipeline/evaluate.py LOADERS, switching the shipped model, setting a model name or model.json, or asking how a model gets from a branch to production.
 ---
 
 # Model release
 
-The pipeline trains whatever `pipeline/train.py` builds. Other models in the repo are experiments until
-`train.py` uses them.
+A model is trained once and then only scored. `candidate.yaml` at the repo root names the trained weights that the
+next release ships: a folder in the Hugging Face repo `zachnorton03/reddit-post-predictor-models`.
+
+```yaml
+path: experiments/deberta_ladder/abc1234/deberta_large_attn4_s42   # an experiment run
+name: run_pooling-435M-deberta_large_attn4
+type: prototype
+```
+
+`scripts/hf_models.py candidate candidate.yaml` checks the file. A test checks it too.
 
 ## Name the model (by hand, every time the model changes)
 
-Set `MODEL_NAME` at the top of `pipeline/train.py`. `train.py` writes it into `model/model.json`.
-
 Format: `<source>-<params>[-<detail>...]`
 
-- `<source>`: the `.py` file that defines the model, without `.py` (for example `dadjokes_models`).
-- `<params>`: total trainable parameters, rounded, with `K`, `M` or `B` (for example `22M`, `184M`, `0.6B`).
-- `<detail>`: optional parts that tell two models apart: base model, blend, LoRA rank, max tokens.
+- `<source>`: the `.py` file that trains the model, without `.py` (for example `run_pooling`, `dadjokes_models`).
+- `<params>`: total trainable parameters, rounded, with `K`, `M` or `B` (for example `22M`, `435M`, `0.6B`).
+- `<detail>`: optional parts that tell two models apart: base model, pooling, LoRA rank, max tokens.
 - Lowercase letters, digits, `_` and `.` only. Parts are joined with `-`. No dates.
 
-Examples: `dadjokes_models-22M-minilm_l6-hgb_blend`, `deberta-184M-v3_base`, `d1-0.6B-lora_r16`.
-`scripts/hf_models.py path` checks the format, and the workflow fails on a bad name.
+Examples: `run_pooling-435M-deberta_large_attn4`, `dadjokes_models-22M-minilm_l6`, `d1-0.6B-lora_r16`.
 
-**Change the name whenever the model changes.** Retraining the same model on new data keeps the name. The
-candidate then replaces `models/<name>/` on Hugging Face. Deployed champions are safe because each one has a
-`model-<n>` tag.
+## `model.json` and loaders
 
-## `model/model.json`
+`pipeline/evaluate.py` loads a model by the `type` in its folder's `model.json`.
 
-Written by `train.py` next to the model files. `evaluate.py` and serving read it to load any past model.
+- Experiment runs have no `model.json`. The release check writes one from `candidate.yaml`
+  (`{"type", "name", "hf_path"}`), and promote stores it next to the weights.
+- `train-eval` runs write it in `pipeline/train.py` (`MODEL_NAME`, `type: minilm`, and the loader's settings).
+- `type: prototype` loads a run saved by `prototype_models.train` (`encoder/`, `tokenizer/`, `head.pt`,
+  `extra.pt`, `spec.json`, `preprocessing.npz`) and reads the full post body (`BODY_CHARS`).
+- Add a loader for each new type. **Keep the loader for the current champion's type**: the release check scores
+  the champion with the new code.
 
-```json
-{"name": "dadjokes_models-22M-minilm_l6-hgb_blend", "type": "minilm_hgb_blend", "params": 22700000}
-```
+## Ship a model
 
-- `type` picks the loader in `pipeline/evaluate.py`. Add a loader for each new type. Keep the loader for the
-  current champion's type until a different model is deployed.
-- Add any settings the loader needs (for example `base_model`, `max_len`).
+1. Train it in an experiment (`experiments/<name>.yaml` on a feature branch; see `docs/pipeline.md`). Choose on the
+   validation table. Never choose on test.
+2. On a feature branch, set `candidate.yaml` (`path` from the results table, `name`, `type`). Open a PR into `dev`.
+   CI must pass. Merging trains nothing.
+3. Open a PR from `dev` into `release`. `release-check` downloads the folder at a pinned revision, scores it and the
+   champion on the same test data, and fails if `pr_auc` or `top10_hit_rate` drops more than 0.01.
+4. Merge. `deploy` downloads the same revision, ships it, publishes the GitHub release `model-<n>`, and promotes it
+   on Hugging Face (`release.json` next to the weights, tag `model-<n>`, `champion.json`).
 
-## Change the shipped model
-
-1. On a feature branch, put the model code in its own module (or a function in an existing one).
-2. In `pipeline/train.py`, call the new code and set a new `MODEL_NAME`.
-3. In `pipeline/evaluate.py`, add a loader for the new `type` if needed. Keep the champion's loader.
-4. Choose settings on the validation split. Never tune on the test split.
-5. Open a PR into `dev`. CI (Ruff and pytest) must pass. No training happens yet.
-6. Merge. The push to `dev` runs `train-eval`:
-   - it trains the candidate on a VCL GPU and uploads it to `models/<name>/`;
-   - it scores the candidate and the champion on the same test data;
-   - the gate fails if either metric drops more than 0.01.
-7. Open a PR from `dev` into `release`. `release-check` passes only if the latest model change on `dev` was
-   trained and gated.
-8. Merge. `deploy` ships that candidate, publishes the GitHub release `model-<n>`, points `champion.json` at
-   the candidate and tags the Hugging Face repo `model-<n>`.
+To retrain `pipeline/train.py`'s model instead (for example on new data), run
+`gh workflow run train-eval.yml --ref <branch>` and set `path: models/<MODEL_NAME>/model`, `type: minilm`.
 
 ## Where things are
 
-- Models: Hugging Face `zachnorton03/reddit-post-predictor-models` (private). `champion.json` names the
-  deployed model.
-- Storage script: `scripts/hf_models.py`. Gate: `scripts/compare_metrics.py`.
+- Models: Hugging Face `zachnorton03/reddit-post-predictor-models`. `champion.json` names the deployed model.
+- Storage script: `scripts/hf_models.py`. Gate: `scripts/compare_metrics.py`. Check: `release-check.yml`.
 - Pipeline overview: `docs/pipeline.md`.

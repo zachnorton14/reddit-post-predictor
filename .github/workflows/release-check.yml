@@ -1,27 +1,218 @@
-# Required check on `release`: a `dev` -> `release` pull request may merge only when the latest model change
-# on its branch was trained and passed the gate (a train-eval run from a push to `dev`). Nothing is retrained.
+# Required check on `release`: score the model named in candidate.yaml on test against the deployed champion.
+# Nothing is trained. The weights were trained once (in an experiment or a train-eval run) and are scored here at
+# a pinned Hugging Face revision; deploy.yml ships exactly that revision.
+#
+#   plan (hosted) ──► image (hosted) ──► trained-candidate (self-hosted controller, VCL GPU)
+#
+# pull_request_target runs this file as it is on `release`, not the pull request's copy, and only for pull requests
+# from this repo's own `dev` branch (others fail). So the self-hosted runner and the secrets never run fork code. `dev` is
+# protected: everything on it came through a reviewed pull request.
+# On a pass, the job uploads the artifact `release-<head commit>` (release.json: what was scored, at which
+# revision, and both models' metrics). deploy.yml finds it by that name.
 name: release-check
 
 on:
-  pull_request:
+  pull_request_target:
     branches: [release]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
-  actions: read
+
+concurrency:
+  group: release-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}/train
+  DATASET: zachnorton03/textonly-subreddit-predictors
+  HEAD_SHA: ${{ github.event.pull_request.head.sha }}
 
 jobs:
-  trained-candidate:
+  plan:
     runs-on: ubuntu-latest
+    outputs:
+      path: ${{ steps.cand.outputs.path }}
+      name: ${{ steps.cand.outputs.name }}
+      type: ${{ steps.cand.outputs.type }}
+      revision: ${{ steps.cand.outputs.revision }}
+    steps:
+      # Fail rather than skip: a skipped job would count as a passing required check.
+      - name: Only pull requests from this repo's dev branch
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ] || [ "$HEAD_REF" != "dev" ]; then
+            echo "::error::Pull requests into release must come from $GITHUB_REPOSITORY:dev (this one: $HEAD_REPO:$HEAD_REF)"
+            exit 1
+          fi
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.HEAD_SHA }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Read candidate.yaml and pin the model repo revision
+        id: cand
+        run: |
+          pip install -q pyyaml "huggingface_hub>=0.25"
+          python scripts/hf_models.py candidate candidate.yaml --resolve > cand.json
+          for k in path name type revision; do
+            echo "$k=$(python -c "import json,sys; print(json.load(open('cand.json'))[sys.argv[1]])" $k)" >> "$GITHUB_OUTPUT"
+          done
+          echo "Candidate: \`$(cat cand.json)\`" >> "$GITHUB_STEP_SUMMARY"
+
+  image:
+    needs: plan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      ref: ${{ steps.tag.outputs.ref }}
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-      - name: Find the passing train-eval run for this pull request
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ env.HEAD_SHA }}
+      - name: Tag the image by the files that define it (same tag as train-eval)
+        id: tag
         run: |
-          id=$(scripts/find_candidate.sh "${{ github.event.pull_request.head.sha }}")
-          echo "Candidate: train-eval run $id ($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$id)" \
-            | tee -a "$GITHUB_STEP_SUMMARY"
+          ref="${IMAGE,,}:${{ hashFiles('docker/train.Dockerfile', 'requirements.txt', '*.py', 'pipeline/**', 'scripts/**') }}"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check whether the image exists
+        id: exists
+        run: |
+          if docker manifest inspect "${{ steps.tag.outputs.ref }}" > /dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.exists.outputs.found != 'true'
+        uses: docker/setup-buildx-action@v3
+      - if: steps.exists.outputs.found != 'true'
+        name: Build and push the training image
+        run: docker buildx build -f docker/train.Dockerfile --push -t "${{ steps.tag.outputs.ref }}" .
+
+  # Keep this job's name: branch protection on `release` requires `trained-candidate`.
+  trained-candidate:
+    needs: [plan, image]
+    runs-on: [self-hosted, Linux]
+    environment: vcl
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: read
+    env:
+      VCL_TOKEN: ${{ secrets.VCL_TOKEN }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      GHCR_USER: ${{ github.actor }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ANSIBLE_HOST_KEY_CHECKING: "False"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.HEAD_SHA }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up tools
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -q -r vcl/requirements.txt ansible-core "huggingface_hub>=0.25"
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Pin the dataset revision for this check
+        id: data
+        run: |
+          rev=$(python -c "from huggingface_hub import HfApi; print(HfApi().dataset_info('$DATASET').sha)")
+          echo "revision=$rev" >> "$GITHUB_OUTPUT"
+
+      - name: Reserve a GPU instance
+        id: vcl
+        # Scoring only: about 10-20 minutes for DeBERTa-large. The RTX 2080 Ti is enough for inference.
+        run: |
+          if python -m vcl up gpu-train-large --length 120 --wait-timeout 15 --inventory vcl_inventory.ini; then
+            echo "profile=gpu-train-large" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::No L40S available; using the RTX 2080 Ti (gpu-train)"
+            python -m vcl up gpu-train --length 120 --inventory vcl_inventory.ini
+            echo "profile=gpu-train" >> "$GITHUB_OUTPUT"
+          fi
+          python scripts/vcl_ledger.py add
+
+      - name: Write the SSH key
+        env:
+          VCL_SSH_KEY: ${{ secrets.VCL_SSH_KEY }}
+        run: |
+          key="$RUNNER_TEMP/vcl_key" && printf '%s\n' "$VCL_SSH_KEY" > "$key" && chmod 600 "$key"
+          echo "KEY=$key" >> "$GITHUB_ENV"
+
+      - name: Set up Docker and the GPU runtime on the instance
+        run: ansible-playbook -i vcl_inventory.ini --private-key "$KEY" infra/ansible/train.yml --tags setup
+
+      - name: Score the candidate and the champion on test
+        run: |
+          mkdir -p gate
+          ansible-playbook -i vcl_inventory.ini --private-key "$KEY" infra/ansible/gate.yml \
+            -e image="${{ needs.image.outputs.ref }}" -e dataset="$DATASET" \
+            -e revision="${{ steps.data.outputs.revision }}" -e results_dir="$PWD/gate" \
+            -e candidate_path="${{ needs.plan.outputs.path }}" -e candidate_revision="${{ needs.plan.outputs.revision }}" \
+            -e candidate_name="${{ needs.plan.outputs.name }}" -e candidate_type="${{ needs.plan.outputs.type }}"
+
+      - name: End the reservation
+        if: always()
+        run: |
+          if [ -f .vcl_state.json ]; then
+            id=$(python -c "import json; print(json.load(open('.vcl_state.json'))['request_id'])")
+            python -m vcl down && python scripts/vcl_ledger.py remove "$id"
+          fi
+          rm -f vcl_inventory.ini .vcl_state.json "$KEY"
+
+      - name: Compare the candidate against the champion
+        run: |
+          {
+            echo "### Release check: \`${{ needs.plan.outputs.name }}\` on test"
+            echo; echo '```'; cat gate/metrics.json; echo; echo '```'
+            if [ -f gate/champion_metrics.json ]; then
+              echo "Champion:"; echo '```'; cat gate/champion_metrics.json; echo; echo '```'
+            else
+              echo "No champion is deployed yet."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/compare_metrics.py gate/metrics.json gate/champion_metrics.json
+
+      - name: Record what passed
+        env:
+          PATH_: ${{ needs.plan.outputs.path }}
+          NAME_: ${{ needs.plan.outputs.name }}
+          TYPE_: ${{ needs.plan.outputs.type }}
+          REVISION_: ${{ needs.plan.outputs.revision }}
+          IMAGE_: ${{ needs.image.outputs.ref }}
+          DATA_REVISION: ${{ steps.data.outputs.revision }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          mkdir -p release
+          python - <<'EOF'
+          import json, os
+          from pathlib import Path
+          champ = Path("gate/champion_metrics.json")
+          release = {"path": os.environ["PATH_"], "revision": os.environ["REVISION_"], "name": os.environ["NAME_"],
+                     "type": os.environ["TYPE_"], "commit": os.environ["HEAD_SHA"], "pr": int(os.environ["PR"]),
+                     "dataset": os.environ["DATASET"], "dataset_revision": os.environ["DATA_REVISION"],
+                     "image": os.environ["IMAGE_"], "gate_run": int(os.environ["GITHUB_RUN_ID"]),
+                     "metrics": json.loads(Path("gate/metrics.json").read_text()),
+                     "champion_metrics": json.loads(champ.read_text()) if champ.exists() else None}
+          Path("release/release.json").write_text(json.dumps(release, indent=2) + "\n")
+          EOF
+          cat release/release.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ env.HEAD_SHA }}
+          path: release/
+          retention-days: 90
