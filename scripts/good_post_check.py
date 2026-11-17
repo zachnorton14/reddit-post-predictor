@@ -8,7 +8,7 @@ It is reported as a percentile of the validation scores.
 
 Check on repeated jokes in 2024 validation: for each post whose exact joke (normalized title and body) appears again
 in validation, the target is the mean engagement percentile of the *other* copies. One post's own result is the
-luck-bound baseline. Train and validation only; test is never loaded. Writes results/good_post/.
+luck-bound baseline. Train and validation only; test is never loaded. Writes results/good_post/<run name>/.
 """
 import argparse
 import json
@@ -32,8 +32,9 @@ def main(argv=None):
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=Path, required=True, help="a finished run_pooling run directory")
-    parser.add_argument("--out", type=Path, default=ROOT / "results/good_post")
+    parser.add_argument("--out", type=Path, help="default: results/good_post/<checkpoint folder name>")
     args = parser.parse_args(argv)
+    args.out = args.out or ROOT / "results/good_post" / args.checkpoint.name
 
     parts = rp.data_splits()
     train = parts["train"][parts["train"].created_at >= pd.Timestamp("2019-01-01")]
