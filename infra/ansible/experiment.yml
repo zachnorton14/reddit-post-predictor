@@ -1,0 +1,91 @@
+# Run the experiment configs on a VCL GPU instance, then copy the summaries to the controller.
+#
+# Run by .github/workflows/experiment.yml after `train.yml --tags setup` (Docker and the NVIDIA runtime).
+# Extra vars: image, dataset, revision, commit, configs (list of config paths on the controller), results_dir,
+# max_seconds (stop waiting after this long). Environment: GHCR_USER, GHCR_TOKEN, HF_TOKEN.
+# pipeline/experiment.py uploads each finished run to Hugging Face from the instance, so the runs are kept even if the
+# reservation ends early. Only the small summaries come back here.
+- name: Run experiments on the GPU instance
+  hosts: vcl
+  become: true
+  vars:
+    workdir: /opt/experiment
+  gather_facts: false
+  tasks:
+    - name: Wait for SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+        sleep: 10
+
+    - name: Run the experiments
+      block:
+        - name: Log in to GHCR
+          ansible.builtin.command:
+            cmd: docker login ghcr.io -u {{ lookup('env', 'GHCR_USER') }} --password-stdin
+            stdin: "{{ lookup('env', 'GHCR_TOKEN') }}"
+          no_log: true
+          changed_when: false
+
+        - name: Pull the training image
+          ansible.builtin.command: docker pull {{ image }}
+          changed_when: true
+
+        - name: Create clean directories
+          ansible.builtin.file:
+            path: "{{ workdir }}/{{ item[0] }}"
+            state: "{{ item[1] }}"
+            mode: "0755"
+          loop: "{{ ['configs', 'out'] | product(['absent', 'directory']) | list }}"
+
+        - name: Copy the configs to the instance
+          ansible.builtin.copy:
+            src: "{{ item }}"
+            dest: "{{ workdir }}/configs/"
+            mode: "0644"
+          loop: "{{ configs }}"
+
+        # One config at a time; async so an hours-long run doesn't depend on one SSH session staying open.
+        - name: Train every run in each config (validation only)
+          ansible.builtin.shell: >-
+            docker run --rm --gpus all --shm-size 8g -e HF_TOKEN
+            -v {{ workdir }}/configs:/configs:ro -v {{ workdir }}/out/{{ item | basename | splitext | first }}:/out
+            {{ image }} python -m pipeline.experiment --config /configs/{{ item | basename }}
+            --dataset {{ dataset }} --revision {{ revision }} --commit {{ commit }} --out /out
+          environment:
+            HF_TOKEN: "{{ lookup('env', 'HF_TOKEN') }}"
+          loop: "{{ configs }}"
+          async: "{{ max_seconds | int }}"
+          poll: 60
+          register: experiment
+          ignore_errors: true
+          changed_when: true
+
+        - name: Package the summaries
+          ansible.builtin.shell: >-
+            cd {{ workdir }}/out && find . -maxdepth 1 -mindepth 1 -type d -print0 |
+            xargs -0 -I{} sh -c 'mkdir -p /tmp/summaries/{} && cp {}/summary.* {}/champion_val.json /tmp/summaries/{}/
+            2>/dev/null || true' && tar -czf {{ workdir }}/summaries.tgz -C /tmp/summaries .
+          changed_when: true
+      always:
+        - name: Log out of GHCR
+          ansible.builtin.command: docker logout ghcr.io
+          changed_when: false
+          failed_when: false
+
+    - name: Copy the summaries to the controller
+      ansible.builtin.fetch:
+        src: "{{ workdir }}/summaries.tgz"
+        dest: "{{ results_dir }}/summaries.tgz"
+        flat: true
+
+    - name: Unpack the summaries on the controller
+      delegate_to: localhost
+      become: false
+      ansible.builtin.unarchive:
+        src: "{{ results_dir }}/summaries.tgz"
+        dest: "{{ results_dir }}"
+
+    - name: Fail if any experiment failed
+      ansible.builtin.fail:
+        msg: "At least one config had a failed run. See the summaries and the log above."
+      when: experiment.results | selectattr('failed', 'defined') | selectattr('failed') | list | length > 0
