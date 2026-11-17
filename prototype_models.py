@@ -44,6 +44,30 @@ class Spec:
     checkpointing: bool = False
     use_fast_tokenizer: bool = True
     body_chars: int | None = 1000
+    # "mean": masked mean of the token vectors. "attention": `queries` learned queries each take a weighted
+    # average of the token vectors; the head reads all of them. Queries start at zero (= mean pooling).
+    pooling: str = "mean"
+    queries: int = 1
+    # Learned embeddings for local hour, weekday and month instead of their standardized raw values.
+    time_embed: bool = False
+
+
+# Spec fields added after runs were saved; left out of run identity while at their defaults.
+NEW_SPEC_DEFAULTS = {"pooling": "mean", "queries": 1, "time_embed": False}
+TIME_EMBED = {"local_hour": (24, 8), "local_dow": (8, 4), "local_month": (13, 4)}  # (table size, dim)
+N_TIME = len(TIME_EMBED)
+if META[:N_TIME] != list(TIME_EMBED):
+    raise ImportError("prototype_models expects the timing columns first in dadjokes_models.META")
+
+
+def spec_identity(spec):
+    return {k: v for k, v in asdict(spec).items() if NEW_SPEC_DEFAULTS.get(k, object()) != v}
+
+
+def default_device():
+    if torch.cuda.is_available():
+        return "cuda"
+    return "mps" if torch.backends.mps.is_available() else "cpu"
 
 
 def write_json(path, value):
@@ -103,26 +127,58 @@ class Network(nn.Module):
         super().__init__()
         if spec.architecture not in ("joint", "interaction"):
             raise ValueError(f"Unknown architecture: {spec.architecture}")
+        if spec.pooling not in ("mean", "attention") or spec.queries < 1:
+            raise ValueError(f"Unknown pooling: {spec.pooling} with {spec.queries} queries")
         self.spec = spec
-        self.encoder = AutoModel.from_pretrained(source or spec.source, local_files_only=True)
+        # float32 master weights: transformers 5 keeps a checkpoint's stored dtype, and DeBERTa-v3 is stored in fp16,
+        # which overflows to a non-finite loss under training. Autocast still runs the forward pass in bf16 on CUDA.
+        self.encoder = AutoModel.from_pretrained(source or spec.source, local_files_only=True, dtype=torch.float32)
         if spec.checkpointing:
             self.encoder.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-        dim = self.encoder.config.hidden_size * (4 if spec.architecture == "interaction" else 1)
+        width = self.encoder.config.hidden_size
+        if spec.pooling == "attention":
+            self.queries = nn.Parameter(torch.zeros(spec.queries, width))
+        pooled = width * (spec.queries if spec.pooling == "attention" else 1)
+        dim = pooled * (4 if spec.architecture == "interaction" else 1)
+        meta_dim = len(META)
+        if spec.time_embed:
+            self.time = nn.ModuleList(nn.Embedding(n, d) for n, d in TIME_EMBED.values())
+            meta_dim += sum(d for _, d in TIME_EMBED.values()) - N_TIME
         # Interaction features explicitly compare setup and punchline semantics.
-        self.head = nn.Sequential(nn.Linear(dim + len(META), spec.hidden), nn.ReLU(),
+        self.head = nn.Sequential(nn.Linear(dim + meta_dim, spec.hidden), nn.ReLU(),
                                   nn.Dropout(spec.dropout), nn.Linear(spec.hidden, 1))
 
     def pool(self, tokens):
         h = self.encoder(**tokens).last_hidden_state
-        mask = tokens["attention_mask"].unsqueeze(-1).to(h.dtype)
-        return (h * mask).sum(1) / mask.sum(1).clamp(min=1)
+        keep = tokens["attention_mask"].bool()
+        if self.spec.pooling == "mean":
+            mask = keep.unsqueeze(-1).to(h.dtype)
+            return (h * mask).sum(1) / mask.sum(1).clamp(min=1)
+        # (batch, queries, tokens): each query's weights over the real tokens sum to 1
+        scores = torch.einsum("btd,qd->bqt", h, self.queries.to(h.dtype)) / math.sqrt(h.shape[-1])
+        scores = scores.masked_fill(~keep.unsqueeze(1), torch.finfo(scores.dtype).min)
+        weights = scores.float().softmax(-1).to(h.dtype)
+        return torch.einsum("bqt,btd->bqd", weights, h).flatten(1)
 
-    def forward(self, first, meta, second=None):
+    def forward(self, first, meta, second=None, times=None):
         a = self.pool(first)
         if self.spec.architecture == "interaction":
             b = self.pool(second)
             a = torch.cat((a, b, (a - b).abs(), a * b), dim=-1)
-        return self.head(torch.cat((a, meta.to(a.dtype)), dim=-1)).squeeze(-1)
+        meta = meta.to(a.dtype)
+        if self.spec.time_embed:
+            # Replace the standardized timing columns with their learned vectors
+            meta = torch.cat([meta[:, N_TIME:], *(e(times[:, i]).to(a.dtype) for i, e in enumerate(self.time))], -1)
+        return self.head(torch.cat((a, meta), dim=-1)).squeeze(-1)
+
+
+def time_tensor(frame, device):
+    """Integer local hour, weekday and month for the timing embeddings."""
+    times = frame[list(TIME_EMBED)].to_numpy()
+    if not np.array_equal(times, np.round(times)) or (times < 0).any() \
+            or (times >= [n for n, _ in TIME_EMBED.values()]).any():
+        raise ValueError("Timing columns must be integers within the embedding tables")
+    return torch.tensor(times.astype(np.int64), device=device)
 
 
 def encode(frame, tokenizer, spec):
@@ -180,6 +236,10 @@ def export_best(net, output, saved, val_frame):
         state_dict={k.removeprefix("encoder."): v for k, v in state.items() if k.startswith("encoder.")})
     recovery.atomic_save({k.removeprefix("head."): v for k, v in state.items() if k.startswith("head.")},
                          output / "head.pt")
+    # Pooling queries and timing embeddings (absent for mean pooling without timing embeddings)
+    extra = {k: v for k, v in state.items() if not k.startswith(("encoder.", "head."))}
+    if extra:
+        recovery.atomic_save(extra, output / "extra.pt")
     np.save(output / "val_predictions.npy", saved["predictions"])
     val_frame[["id", "created_at"]].to_parquet(output / "val_rows.parquet", index=False)
     write_json(output / "best.json", saved["row"])
@@ -194,12 +254,13 @@ def infer(net, tokenizer, frame, prep, device, encoded=None):
         lengths = np.maximum(lengths, [len(x) for x in second["input_ids"]])
     meta = torch.tensor((frame[META].to_numpy(np.float32) - prep["mean"]) / prep["scale"],
                         dtype=torch.float32, device=device)
+    times = time_tensor(frame, device) if net.spec.time_embed else None
     pred = np.empty(len(frame), dtype=np.float32)
     # DeBERTa has substantially larger attention activations than MiniLM.
     for indices in batch_order(lengths, net.spec.batch_size * 2):
         with amp_context(device):
             p = net(collate(first, indices, tokenizer, device), meta[indices],
-                    collate(second, indices, tokenizer, device))
+                    collate(second, indices, tokenizer, device), None if times is None else times[indices])
         pred[indices] = p.float().cpu().numpy()
     return pred * prep["sd"] + prep["mu"]
 
@@ -212,7 +273,7 @@ def train(spec, train_frame, val_frame, output, device=None, resume=False, check
         raise ValueError("Epochs and batch sizes must be positive")
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    identity = dict(spec=asdict(spec), train_fingerprint=fingerprint(train_frame),
+    identity = dict(spec=spec_identity(spec), train_fingerprint=fingerprint(train_frame),
                     val_fingerprint=fingerprint(val_frame),
                     pretrained_sha256=source_fingerprint(spec.source),
                     code_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -247,7 +308,7 @@ def train(spec, train_frame, val_frame, output, device=None, resume=False, check
     torch.manual_seed(spec.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(spec.seed)
-    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    device = device or default_device()
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
     start = time.monotonic()
@@ -265,6 +326,7 @@ def train(spec, train_frame, val_frame, output, device=None, resume=False, check
         net = Network(spec).to(device)
     meta = torch.tensor((train_frame[META].to_numpy(np.float32) - prep["mean"]) / prep["scale"],
                         device=device)
+    times = time_tensor(train_frame, device) if spec.time_embed else None
     y = torch.tensor((train_frame.metric.to_numpy(np.float32) - prep["mu"]) / prep["sd"], device=device)
     optimizer = torch.optim.AdamW(net.parameters(), lr=spec.learning_rate, weight_decay=.01, foreach=False)
     steps = math.ceil(math.ceil(len(train_frame) / spec.batch_size) / spec.accumulation)
@@ -350,7 +412,8 @@ def train(spec, train_frame, val_frame, output, device=None, resume=False, check
             for indices in group:
                 with amp_context(device):
                     pred = net(collate(train_tokens[0], indices, tokenizer, device), meta[indices],
-                               collate(train_tokens[1], indices, tokenizer, device))
+                               collate(train_tokens[1], indices, tokenizer, device),
+                               None if times is None else times[indices])
                     loss = nn.functional.mse_loss(pred.float(), y[indices])
                 if not torch.isfinite(loss):
                     raise FloatingPointError(f"Non-finite loss for {spec.name}")
@@ -390,11 +453,27 @@ def train(spec, train_frame, val_frame, output, device=None, resume=False, check
                peak_gpu_mib=torch.cuda.max_memory_allocated() / 2**20 if device == "cuda" else 0,
                best_val_ap=best, recovery=json.loads((output / "recovery.json").read_text())
                if (output / "recovery.json").exists() else None))
-    del net, optimizer, meta, y
+    del net, optimizer, meta, y, times
     gc.collect()
     if device == "cuda":
         torch.cuda.empty_cache()
     return output
+
+
+# Posting context: when, how busy the subreddit was, and who posted. The rest of META describes the post itself.
+CONTEXT = ["local_hour", "local_dow", "local_month", "log_posts_prev_hour", "log_posts_prev_day", "has_author_flair",
+           "log_author_prev_posts"]
+
+
+def typical_context(reference):
+    """One fixed posting context from a reference frame (training posts): the most common hour, weekday and month,
+    and the median of the other context columns."""
+    return {c: reference[c].mode().iloc[0] if c in TIME_EMBED else float(reference[c].median()) for c in CONTEXT}
+
+
+def neutral_context(frame, context):
+    """The same posts as if all were posted in one fixed context, so a prediction depends only on the post."""
+    return frame.assign(**{c: frame[c].dtype.type(v) for c, v in context.items()})
 
 
 def predict_checkpoint(path, frame, device=None, legacy=False):
@@ -406,10 +485,16 @@ def predict_checkpoint(path, frame, device=None, legacy=False):
         spec = Spec(name=old["name"], max_length=old["max_length"], body_chars=old["body_chars"], batch_size=128)
     else:
         spec = Spec(**json.loads((path / "spec.json").read_text()))
-    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    device = device or default_device()
     tokenizer = AutoTokenizer.from_pretrained(path / "tokenizer", local_files_only=True, use_fast=spec.use_fast_tokenizer)
     net = Network(spec, path / "encoder").to(device)
     net.head.load_state_dict(torch.load(path / "head.pt", map_location=device, weights_only=True))
+    expected = {k for k in net.state_dict() if not k.startswith(("encoder.", "head."))}
+    if expected:
+        extra = torch.load(path / "extra.pt", map_location=device, weights_only=True)
+        if set(extra) != expected:
+            raise ValueError(f"extra.pt has {sorted(extra)}, the network needs {sorted(expected)}")
+        net.load_state_dict(extra, strict=False)
     prep = dict(np.load(path / "preprocessing.npz"))
     result = infer(net, tokenizer, frame, prep, device)
     del net

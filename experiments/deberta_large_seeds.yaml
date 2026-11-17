@@ -1,0 +1,7 @@
+# DeBERTa-v3-large seeds: confirm the one-seed gain of large over base (deberta_ladder), and test whether 4-query
+# attention pooling matters on large (attn4 vs mean). About 80 min per run with overhead, so about 6.7 h.
+runner: run_pooling.py
+runs:
+  - {model: deberta_large_attn4, seeds: [43, 44]}
+  - {model: deberta_large_mean, seeds: [42, 43, 44]}
+allow_fallback: false

@@ -1,0 +1,24 @@
+{
+  "checkpoint": "data/hf_runs/experiments/deberta_ladder/44db5e4/deberta_large_attn4_s42",
+  "context": {
+    "local_hour": 12.0,
+    "local_dow": 5.0,
+    "local_month": 7.0,
+    "log_posts_prev_hour": 1.9459101490553132,
+    "log_posts_prev_day": 4.912654885736052,
+    "has_author_flair": 0.0,
+    "log_author_prev_posts": 1.0986122886681098
+  },
+  "val_posts": 29760,
+  "repeated_posts": 1541,
+  "repeated_jokes": 588,
+  "spearman_vs_own_outcome": {
+    "full": 0.4229932293763581,
+    "quality": 0.4200873051913159
+  },
+  "spearman_vs_other_copies": {
+    "own_outcome": 0.3959796710561595,
+    "full": 0.411727185716219,
+    "quality": 0.41172669395441797
+  }
+}

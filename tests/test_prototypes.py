@@ -84,6 +84,24 @@ class PrototypeTests(unittest.TestCase):
         self.assertEqual(self.tokenizer.truncation_side, "right")
         self.assertGreater(len(body["input_ids"][1]), 0)
 
+    def test_half_precision_checkpoint_loads_as_float32(self):
+        source = self.root / "tiny_fp16"
+        BertModel(BertConfig(vocab_size=16, hidden_size=16, num_hidden_layers=1, num_attention_heads=2,
+                             intermediate_size=32)).half().save_pretrained(source)
+        net = pm.Network(replace(self.spec(), source=str(source)))
+        self.assertEqual({p.dtype for p in net.parameters()}, {torch.float32})
+
+    def test_neutral_context_changes_only_context_columns(self):
+        d = frame(6, "2020-01-01")
+        context = pm.typical_context(d)
+        self.assertEqual(set(context), set(pm.CONTEXT))
+        n = pm.neutral_context(d, context)
+        for c in pm.CONTEXT:
+            self.assertTrue((n[c] == n[c].iloc[0]).all())
+            self.assertEqual(n[c].dtype, d[c].dtype)
+        rest = [c for c in d.columns if c not in pm.CONTEXT]
+        pd.testing.assert_frame_equal(n[rest], d[rest])
+
     def test_deberta_checkpointing_accumulates_gradients(self):
         source = self.root / "tiny_deberta"
         model = DebertaV2Model(DebertaV2Config(vocab_size=16, hidden_size=16,
@@ -97,6 +115,62 @@ class PrototypeTests(unittest.TestCase):
             pred = net(tokens, torch.zeros(1, len(pm.META)))
             pred.square().mean().backward()
         self.assertGreater(net.encoder.embeddings.word_embeddings.weight.grad.abs().sum().item(), 0)
+
+    def test_attention_pooling_starts_as_mean_and_reads_every_query(self):
+        d = frame(3, "2020-01-01")
+        mean, attn = self.spec(max_length=8), self.spec(max_length=8, pooling="attention", queries=4)
+        torch.manual_seed(0)
+        net_mean = pm.Network(mean).eval()
+        net_attn = pm.Network(attn).eval()
+        tokens = pm.collate(pm.encode(d, self.tokenizer, mean)[0], [0, 1, 2], self.tokenizer, "cpu")
+        net_attn.encoder.load_state_dict(net_mean.encoder.state_dict())
+        pooled = net_attn.pool(tokens).view(3, 4, -1)
+        # Zero queries weight every real token equally, so each query starts as the masked mean
+        for q in range(4):
+            torch.testing.assert_close(pooled[:, q], net_mean.pool(tokens))
+        self.assertEqual(net_attn.head[0].in_features, 4 * 16 + len(pm.META))
+        net_attn.train()
+        net_attn(tokens, torch.zeros(3, len(pm.META))).sum().backward()
+        self.assertGreater(net_attn.queries.grad.abs().sum().item(), 0)
+
+    def test_attention_ignores_padding(self):
+        net = pm.Network(self.spec(pooling="attention", queries=2)).eval()
+        with torch.no_grad():
+            net.queries.normal_()
+        short = {"input_ids": torch.tensor([[2, 5, 3]]), "attention_mask": torch.ones(1, 3, dtype=torch.long)}
+        padded = {"input_ids": torch.tensor([[2, 5, 3, 0, 0]]),
+                  "attention_mask": torch.tensor([[1, 1, 1, 0, 0]])}
+        torch.testing.assert_close(net.pool(short), net.pool(padded), atol=1e-5, rtol=1e-5)
+
+    def test_time_embeddings_replace_raw_timing(self):
+        net = pm.Network(self.spec(time_embed=True)).eval()
+        tokens = {"input_ids": torch.tensor([[2, 5, 3]] * 2), "attention_mask": torch.ones(2, 3, dtype=torch.long)}
+        meta = torch.zeros(2, len(pm.META))
+        times = torch.tensor([[7, 2, 5], [23, 2, 5]])
+        p = net(tokens, meta, times=times)
+        self.assertNotAlmostEqual(p[0].item(), p[1].item())  # the hour reaches the head
+        changed = meta.clone()
+        changed[:, :pm.N_TIME] = 99.  # standardized raw timing values are no longer read
+        torch.testing.assert_close(p, net(tokens, changed, times=times))
+        bad = frame(2, "2020-01-01")
+        bad["local_hour"] = 24
+        with self.assertRaises(ValueError):
+            pm.time_tensor(bad, "cpu")
+
+    def test_new_options_save_and_reload(self):
+        tr, val = frame(13, "2020-01-01"), frame(8, "2024-01-01")
+        for d in (tr, val):
+            d["local_hour"], d["local_dow"], d["local_month"] = np.arange(len(d)) % 24, 1 + np.arange(len(d)) % 7, 3
+        spec = self.spec(pooling="attention", queries=3, time_embed=True)
+        path = self.root / "run_attn"
+        pm.train(spec, tr, val, path, device="cpu")
+        self.assertTrue((path / "extra.pt").exists())
+        pred = pm.predict_checkpoint(path, val, device="cpu")
+        np.testing.assert_allclose(pred, np.load(path / "val_predictions.npy"), rtol=1e-5, atol=1e-5)
+
+    def test_default_spec_identity_is_unchanged(self):
+        self.assertNotIn("pooling", pm.spec_identity(self.spec()))
+        self.assertEqual(pm.spec_identity(self.spec(queries=4))["queries"], 4)
 
     def test_remainder_batches_cover_all_rows_once(self):
         lengths = np.arange(307) % 10
