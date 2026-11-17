@@ -1,5 +1,39 @@
 # Project notes: EDA and baselines (handoff)
 
+## Update 2026-11-17: DeBERTa ladder on a VCL L40S (one seed)
+
+Question: do the MiniLM ladder changes (256 tokens, timing embeddings, attention pooling) help DeBERTa-v3, and
+does DeBERTa-v3-large beat base? Runner: `run_pooling.py` through the experiment workflow
+(`experiments/deberta_ladder.yaml`, commit `44db5e4`, [run 44106600151](https://github.com/zachnorton14/reddit-post-predictor/actions/runs/44106600151)).
+Weights: `zachnorton03/reddit-post-predictor-models` → `experiments/deberta_ladder/44db5e4/`. Table:
+`results/pooling/deberta_ladder_l40s.csv`.
+
+- **Setup:** same data, splits, head and checkpoint choice as the MiniLM ladder below. Train 2019–2023 (174,043),
+  validation 2024 (29,760), pinned dataset revision `e02c2b6`. Seed 42 only. 3 epochs, bf16 autocast, L40S.
+  Base: lr 2e-5, effective batch 128. Large: lr 1e-5, effective batch 128, gradient checkpointing. Test not scored.
+- **Bug fixed first:** the first attempt (run 44011347265) stopped on a non-finite loss in every run. transformers 5
+  loads a checkpoint in its stored dtype, and the DeBERTa-v3 checkpoints are stored in fp16. `Network` now loads
+  the encoder in float32 (`44db5e4`).
+
+| Run | Change | Val AP | Top-10% hit | Spearman | Best epoch | Train min |
+|---|---|---:|---:|---:|---:|---:|
+| deberta_base | Owen's spec (96 tokens, mean pooling) | 0.2609 | 30.5% | 0.400 | 2 | 10 |
+| deberta_attn1 | + 256 tokens, timing embeddings, 1 query | 0.2616 | 30.2% | 0.399 | 2 | 11 |
+| deberta_attn4 | same, 4 queries | 0.2591 | 30.6% | 0.398 | 3 | 15 |
+| deberta_attn10 | same, 10 queries | 0.2593 | 30.8% | 0.395 | 2 | 11 |
+| deberta_large_attn4 | DeBERTa-v3-large, 4 queries | **0.2673** | 30.8% | **0.423** | 2 | 69 |
+
+What it means:
+- `deberta_base` reproduces Owen's result (0.2569 earlier, 0.2609 here). The gap is the size of seed noise.
+- On DeBERTa-base the MiniLM changes did not help: the four base runs are within 0.0025 AP, smaller than the
+  MiniLM seed SD (about 0.005). The MiniLM gain from attention pooling (+0.004 over three seeds) does not show here.
+- Large is the only clear gain: +0.006 AP over the best-matched base run and +0.023 Spearman. The top-10% hit rate
+  did not move (30.2–30.8% for all five). One seed, so the AP gain still needs confirmation.
+- Time: about 10–15 min per base run and 69 min for large, plus about 11 min of overhead per run (data and model
+  download). The job took 2 h 52 min for 116 min of training.
+- Next: seeds 43 and 44 of `deberta_large_attn4`, and `deberta_large_mean` (seeds 42–44) to test whether attention
+  pooling matters on large. Five large runs take about 6.7 h, so they fit one overnight reservation.
+
 ## Update 2026-11-16: input length, timing embeddings and attention pooling (MiniLM ladder)
 
 Question: does the fine-tuned encoder lose signal by truncating posts, by reading timing as raw numbers, or by
