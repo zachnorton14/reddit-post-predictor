@@ -53,6 +53,7 @@ class Config:
     embed_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     smoothing: int = 20              # pseudo-posts for the weekday x hour success rates (textonly_baselines)
     seed: int = 42
+    body_chars: int | None = 1000    # None keeps the full body (before any EDIT marker)
 
 
 # ---------------------------------------------------------------- data
@@ -64,7 +65,7 @@ def load(cfg, source=None):
     """
     def labeled(src):
         bcfg = tb.Config(source=src, train_end=cfg.train_end, val_end=cfg.val_end, max_train_per_sub=10**9,
-                         max_eval_per_sub=10**9)
+                         max_eval_per_sub=10**9, body_chars=cfg.body_chars)
         d = tb.load_data(bcfg)
         return pd.concat([d.train.assign(split="train"), d.val.assign(split="val"), d.test.assign(split="test")])
 
@@ -72,7 +73,8 @@ def load(cfg, source=None):
         df = labeled(source)
     else:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        path = CACHE_DIR / f"{cfg.subreddit}.parquet"
+        body = "" if cfg.body_chars == 1000 else f"_body{cfg.body_chars}"
+        path = CACHE_DIR / f"{cfg.subreddit}{body}.parquet"
         if not path.exists():
             labeled(f"data/textonly/data/{cfg.subreddit}/*/*.parquet").to_parquet(path)
         df = pd.read_parquet(path)

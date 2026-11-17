@@ -1,6 +1,6 @@
 # Fallback for train-eval.yml: train and evaluate on a Modal GPU instead of VCL. Manual only.
-# It produces the same `candidate` artifact and runs the same gate. It is not a required check on
-# `release`, so a pull request still needs a passing `train-eval / gate` from the VCL workflow.
+# It produces the same `candidate` artifact and runs the same gate. Shipping goes through candidate.yaml and
+# release-check.yml, which scores the saved weights on VCL.
 name: train-eval-modal
 
 on:
@@ -83,5 +83,9 @@ jobs:
         run: |
           pip install -q "huggingface_hub>=0.25"
           python scripts/hf_models.py fetch-champion champion
+          if [ -f champion/release.json ]; then
+            python3 -c "import json; print(json.dumps(json.load(open('champion/release.json'))['metrics']))" \
+              > champion_metrics.json
+          fi
       - name: Compare the candidate against the champion
-        run: python3 scripts/compare_metrics.py candidate/metrics.json champion/metrics.json
+        run: python3 scripts/compare_metrics.py candidate/metrics.json champion_metrics.json

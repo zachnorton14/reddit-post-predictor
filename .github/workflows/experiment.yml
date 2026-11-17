@@ -87,7 +87,7 @@ jobs:
       - name: Tag the image by the files that define it (same tag as train-eval)
         id: tag
         run: |
-          ref="${IMAGE,,}:${{ hashFiles('docker/train.Dockerfile', 'requirements.txt', '*.py', 'pipeline/**') }}"
+          ref="${IMAGE,,}:${{ hashFiles('docker/train.Dockerfile', 'requirements.txt', '*.py', 'pipeline/**', 'scripts/**') }}"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
       - uses: docker/login-action@v3
         with:

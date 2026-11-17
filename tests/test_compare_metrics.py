@@ -26,3 +26,7 @@ class CompareMetricsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_different_posts_fail(self):
+        self.assertTrue(compare({"pr_auc": 0.3, "top10_hit_rate": 0.4, "rows": "a"}, {**PROD, "rows": "b"}))
+        self.assertEqual(compare({"pr_auc": 0.3, "top10_hit_rate": 0.4, "rows": "a"}, {**PROD, "rows": "a"}), [])

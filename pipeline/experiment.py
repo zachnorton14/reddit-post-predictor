@@ -158,7 +158,7 @@ def score_champion(dataset, revision, out) -> dict | None:
         if not champ:
             return None
         result = out / "champion_val.json"
-        subprocess.run([sys.executable, "-m", "pipeline.evaluate", "--model", str(Path(tmp) / "model"), "--split", "val",
+        subprocess.run([sys.executable, "-m", "pipeline.evaluate", "--model", tmp, "--split", "val",
                         "--dataset", dataset, "--revision", revision, "--out", str(result)], check=True, cwd=ROOT)
     return {"name": champ["name"], "version": champ["version"], **json.loads(result.read_text())}
 

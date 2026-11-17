@@ -12,3 +12,5 @@ runs:
 The file name names the results folder on Hugging Face (`experiments/<name>/<short commit>/`), so use lowercase
 letters, digits and `_`. Check a config locally with `python -m pipeline.experiment --check experiments/<name>.yaml`.
 Full format, runner contract and timing: `docs/pipeline.md` "Experiments".
+
+To ship a run, put its folder in `candidate.yaml` at the repo root (see `.claude/skills/model-release/SKILL.md`).
