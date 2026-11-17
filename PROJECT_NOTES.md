@@ -1,5 +1,38 @@
 # Project notes: EDA and baselines (handoff)
 
+## Update 2026-11-17: how much posting-time signal is left (ceiling check)
+
+Question: is there signal the model is missing, or is it near what text and posting-time data allow? Script:
+`scripts/ceiling_check.py`. Results: `results/ceiling/summary.json`, `results/ceiling/gain.csv`.
+
+- **Setup:** r/dadjokes, train 2019–2023 and validation 2024 (29,760 posts, base rate 10.0%). Test not loaded.
+  History features use only earlier posts at least 7 days old, so their scores have settled. The gain check adds
+  features to the `minilm_attn4` seed-42 validation predictions with a logistic regression, fit on one half of
+  2024 and scored on the other (two folds by time).
+- **Copies of the same joke disagree.** 2,281 validation posts (7.7%) repeat an earlier joke exactly (same
+  normalized title and body). The engagement percentiles of the two copies have Spearman 0.355. The model's
+  validation Spearman is already 0.40 (MiniLM) to 0.42 (DeBERTa-large). Much of the outcome is not in the text.
+- **The missing signals exist on their own.** 62% of validation posts have settled author history. The author's
+  earlier mean percentile has Spearman 0.215 with the new post. When the earlier copy of a repost made the top 10%,
+  the repost does too 33.6% of the time, against 11.8% otherwise. The model already sees `log_author_prev_posts`
+  and `is_repost`, but not these outcomes.
+- **They add nothing over the model:**
+
+| Inputs | Val AP | Top-10% hit |
+|---|---:|---:|
+| model only | 0.2402 | 29.0% |
+| + author history (count, mean percentile, top-10% rate) | 0.2288 | 28.9% |
+| + repost history (earlier copies' percentile) | 0.2420 | 29.4% |
+| + both | 0.2369 | 29.2% |
+
+What it means:
+- Author history hurts slightly; text style and post count already carry it. The repost gain (+0.002) is seed noise.
+- Remaining gains are small: DeBERTa-large (+0.006 AP, one seed) and averaging seeds or models.
+- The top-10% hit rate has stayed at 29–31% on validation for every model. 35% on 2024 validation looks out of
+  reach. The earlier 34.4% was on the test period, a different year.
+- One seed of one model and a linear combiner; a feature inside the network could do a little better, but the
+  repost agreement of 0.355 limits how much.
+
 ## Update 2026-11-17: DeBERTa ladder on a VCL L40S (one seed)
 
 Question: do the MiniLM ladder changes (256 tokens, timing embeddings, attention pooling) help DeBERTa-v3, and

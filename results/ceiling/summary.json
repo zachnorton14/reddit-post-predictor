@@ -1,0 +1,11 @@
+{
+  "val_posts": 29760,
+  "val_base_rate": 0.10006720430107527,
+  "val_reposts": 2281,
+  "repost_spearman_prev_vs_this": 0.3554789490706584,
+  "repost_label_rate_prev_top10": 0.33636363636363636,
+  "repost_label_rate_prev_not_top10": 0.11787072243346007,
+  "val_share_with_settled_author_history": 0.624361559139785,
+  "author_spearman_prev_mean_vs_this": 0.214882677131139,
+  "predictions": "data/pooling/minilm_attn4_s42/val_predictions.npy"
+}
