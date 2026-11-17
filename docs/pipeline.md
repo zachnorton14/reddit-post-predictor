@@ -99,9 +99,13 @@ Models live in the private Hugging Face repo `zachnorton03/reddit-post-predictor
 - Every train-eval run uploads its candidate to `models/<name>/`, where `<name>` is `MODEL_NAME` from
   `pipeline/train.py`: `model/` (with `model.json`), `metrics.json`, `champion_metrics.json` and `run.json`.
   Retraining the same model replaces that folder.
-- Deploy promotes the candidate. It points `champion.json` at the folder and creates the git tag `model-<n>`
-  on the Hugging Face repo, which matches the GitHub release `model-<n>`. The tag keeps the champion's files
-  even if a later run replaces the folder.
+- After the upload, `run.json` in the GitHub `candidate` artifact gets `hf_revision`: the Hugging Face commit
+  that holds this run's files. (The copy on Hugging Face can't contain its own commit, so it has no `hf_revision`.)
+- Deploy promotes the candidate. It creates the git tag `model-<n>` on that `hf_revision` and points
+  `champion.json` at the folder, so the tag matches the files that were deployed. The tag keeps the champion's
+  files even if a later run, including a manual run on a branch, replaces the folder. `model-<n>` matches the
+  GitHub release `model-<n>`.
+- Runs from before `hf_revision` existed can't be promoted; `promote` fails with a clear error. Retrain on `dev`.
 - The next train-eval run downloads the champion at its tag and scores it again with the new `evaluate.py`.
   So a changed metric or dataset still compares like with like.
 
