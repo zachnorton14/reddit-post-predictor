@@ -13,6 +13,7 @@ import pandas as pd
 
 from dadjokes_models import CATEGORICAL, META
 import prototype_models as pm
+from scripts import deberta_ensemble
 
 
 def score_frame(frame, run=Path("data/prototypes/full"), reference=Path("data/improvements/full"), model="selected"):
@@ -27,6 +28,8 @@ def score_frame(frame, run=Path("data/prototypes/full"), reference=Path("data/im
     selection = json.loads((run / "selection.json").read_text()) if model == "selected" else None
     if selection:
         model = selection["selected"]
+    if model in deberta_ensemble.MODELS:
+        return deberta_ensemble.predict(frame, model)
     if model in ("interaction", "deberta"):
         if not (run / model / "complete.json").exists():
             raise ValueError(f"Missing completed {model} checkpoint")
@@ -63,7 +66,7 @@ def main():
     parser.add_argument("--run", type=Path, default=Path("data/prototypes/full"))
     parser.add_argument("--reference", type=Path, default=Path("data/improvements/full"))
     parser.add_argument("--model", default="selected", choices=["selected", "interaction", "deberta", "incumbent",
-                        "ranking_blend", "interaction_blend", "deberta_blend"])
+                        "ranking_blend", "interaction_blend", "deberta_blend", *deberta_ensemble.MODELS])
     args = parser.parse_args()
     if args.output.exists():
         parser.error("Output already exists; choose a new path")
