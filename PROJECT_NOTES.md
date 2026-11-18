@@ -1,5 +1,36 @@
 # Project notes: EDA and baselines (handoff)
 
+## Update 2026-11-18: DeBERTa-large seeds (attention vs mean pooling)
+
+Question: does DeBERTa-v3-large hold its one-seed gain over base, and does 4-query attention pooling matter on
+large? Config `experiments/deberta_large_seeds.yaml`, commit `5e83692`,
+[run 44147572268](https://github.com/zachnorton14/reddit-post-predictor/actions/runs/44147572268) (8 h 30 min on
+one L40S reservation). Weights: `zachnorton03/reddit-post-predictor-models` →
+`experiments/deberta_large_seeds/5e83692/`. Table: `results/pooling/deberta_large_seeds_l40s.csv` (seed 42 of attn4
+is in `deberta_ladder_l40s.csv`).
+
+- **Setup:** as in the DeBERTa ladder below: train 2019–2023 (174,043), validation 2024 (29,760), pinned revision
+  `e02c2b6`, 256 tokens, timing embeddings, lr 1e-5, effective batch 128, 3 epochs, best epoch by validation AP.
+  Test not scored.
+
+| Model | Seeds | Val AP (mean ± SD) | Top-10% hit | Spearman |
+|---|---:|---:|---:|---:|
+| deberta_large_attn4 | 42, 43, 44 | 0.2704 ± 0.0060 | 31.0% | 0.421 |
+| deberta_large_mean | 42, 43, 44 | 0.2700 ± 0.0006 | 31.4% | 0.416 |
+| deberta_base (Owen's spec, for reference) | 42 | 0.2609 | 30.5% | 0.400 |
+
+Per seed, attn4: 0.2673, 0.2773, 0.2667; mean: 0.2706, 0.2693, 0.2701.
+
+What it means:
+- Large beats base by about +0.009 AP and +0.02 Spearman, now on three seeds (base still has one seed here and
+  0.2569 in Owen's run). The gain is real but small.
+- Attention pooling does not matter on large: the means differ by 0.0004 AP. Mean pooling is ten times more stable
+  across seeds (SD 0.0006 against 0.0060) and is simpler, so it is the better choice.
+- The top-10% hit rate is 31–31.5%, the best on validation so far but still short of 35% (see the ceiling check).
+- Recommended ship candidate: `deberta_large_mean`. It needs the planned "prototype" loader in
+  `pipeline/evaluate.py` before the gate can score it on test.
+- PR #25 was merged before this run ended, so the workflow put the table in the run summary, not on a PR.
+
 ## Update 2026-11-17: a context-free "good post" score
 
 Question: can the model say whether a post is good, whatever its luck? Code: `prototype_models.CONTEXT`,
