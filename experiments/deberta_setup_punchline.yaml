@@ -1,0 +1,11 @@
+# Can a shared encoder reading the title and body separately rank r/dadjokes posts better?
+# Each size gets a fresh seed-45 joint control and a matched setup/punchline run.
+# Four sequential runs on one L40S. Budget roughly 5–8 hours including the two-pass models.
+runner: run_pooling.py
+epochs: 3
+allow_fallback: false
+runs:
+  - {model: deberta_attn4, seeds: [45]}
+  - {model: deberta_attn4_interaction, seeds: [45]}
+  - {model: deberta_large_attn4, seeds: [45]}
+  - {model: deberta_large_attn4_interaction, seeds: [45]}

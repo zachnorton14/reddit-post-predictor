@@ -1,0 +1,13 @@
+# The model the next `dev` -> `release` pull request ships. It must already be trained: nothing is retrained.
+#
+#   path: the folder in the HF models repo (zachnorton03/reddit-post-predictor-models) that holds its weights.
+#         An experiment run: experiments/<config>/<short commit>/<model>_s<seed> (the link in the PR's results table).
+#         A train-eval run: models/<name>/model
+#   name: <source .py name>-<param count>[-<detail>...], lowercase, for example run_pooling-435M-deberta_large_attn4
+#   type: the loader in pipeline/evaluate.py LOADERS (prototype for experiment runs, minilm for train-eval MiniLM)
+#
+# Choose it on validation (the experiment table), never on test. The release check scores it on test against the
+# deployed champion. Change it on a feature branch and merge into dev like any other change.
+path: models/dadjokes_models-22M-minilm_l6/model
+name: dadjokes_models-22M-minilm_l6
+type: minilm

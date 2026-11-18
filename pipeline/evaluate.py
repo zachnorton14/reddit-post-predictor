@@ -5,11 +5,13 @@
 The gate uses test. Experiments (pipeline/experiment.py) use val, so choosing among them never looks at test.
 
 Loads any past model by the `type` in <dir>/model.json, so the deployed champion can be scored with this code.
-Never writes into <dir> (the champion is mounted read-only).
+Never writes into <dir> (the champion is mounted read-only). The metrics include `rows`, a hash of the scored post
+ids, so the gate can check that two models were scored on the same posts.
 """
 
 import argparse
 import copy
+import hashlib
 import json
 from pathlib import Path
 
@@ -28,8 +30,17 @@ def predict_minilm(model_dir, meta, data):
     return dm.predict_net(net, tok, dm.text_of(data.test), meta["max_len"], meta["mu"], meta["sd"])
 
 
+def predict_prototype(model_dir, meta, data):
+    """A run saved by prototype_models.train (experiment runners such as run_pooling.py): encoder/, head.pt, spec.json."""
+    import prototype_models as pm
+
+    return pm.predict_checkpoint(model_dir, data.test)
+
+
 # model.json type -> loader(model_dir, meta, data) returning test predictions. Keep the deployed champion's type.
-LOADERS = {"minilm": predict_minilm}
+LOADERS = {"minilm": predict_minilm, "prototype": predict_prototype}
+# Body characters each type reads (default 1000). Prototype runs read the full body and cut it themselves (spec.json).
+BODY_CHARS = {"prototype": None}
 
 
 def parse_args(argv=None):
@@ -42,11 +53,20 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
+def rows_hash(frame) -> str | None:
+    if "id" not in frame:
+        return None
+    return hashlib.sha256("\n".join(sorted(frame.id.astype(str))).encode()).hexdigest()[:16]
+
+
 def metrics(frame, p, split="test"):
     s = dm.scores(frame, p)
-    # compare_metrics.py gates on top10_hit_rate
-    return {"pr_auc": float(s["pr_auc"]), "top10_hit_rate": float(s["top10_hit"]),
-            "spearman": float(s["spearman"]), f"n_{split}": len(frame)}
+    # compare_metrics.py gates on top10_hit_rate and checks that `rows` match
+    result = {"pr_auc": float(s["pr_auc"]), "top10_hit_rate": float(s["top10_hit"]),
+              "spearman": float(s["spearman"]), f"n_{split}": len(frame)}
+    if rows_hash(frame):
+        result["rows"] = rows_hash(frame)
+    return result
 
 
 def main(argv=None):
@@ -55,7 +75,8 @@ def main(argv=None):
     if meta.get("type") not in LOADERS:
         raise SystemExit(f"unknown model type {meta.get('type')!r} in {args.model}/model.json; "
                          f"known types: {', '.join(LOADERS)}")
-    data = load_pinned(args.dataset, args.revision)
+    data = load_pinned(args.dataset, args.revision, body_chars=BODY_CHARS.get(meta["type"], 1000),
+                       validation_only=args.split == "val")
     if args.split == "val":
         # Loaders predict data.test; point it at validation so the loaders need no split argument
         data = copy.copy(data)

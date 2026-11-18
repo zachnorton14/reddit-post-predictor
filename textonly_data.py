@@ -79,13 +79,15 @@ def connect(source="local", history=True):
         local = sorted(str(f) for f in Path(OUT_DIR / "data").glob("*/*/*.parquet"))
         if not local:
             raise FileNotFoundError(f"No files in {OUT_DIR}/data. Run extract_subreddits.py or use source='hf'.")
-        files = "[" + ", ".join(f"'{f}'" for f in local) + "]"
+        files = local
+    elif isinstance(source, list):
+        files = source
     else:
-        files = f"'{SOURCES.get(source, source)}'"
+        files = SOURCES.get(source, source)
     con = duckdb.connect()
     # The progress bar is saved into notebook outputs as a widget
     con.execute("SET enable_progress_bar = false")
-    con.execute(f"CREATE OR REPLACE VIEW raw_posts AS SELECT * FROM read_parquet({files})")
+    con.read_parquet(files).create_view("raw_posts")
     if history:
         add_history(con)
     hist_cols = "h.posts_prev_hour, h.posts_prev_day, h.author_prev_posts, h.title_prev_count," if history else ""

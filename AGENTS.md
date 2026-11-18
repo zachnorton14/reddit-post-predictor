@@ -12,7 +12,7 @@ The model that ships today is a fine-tuned MiniLM on r/dadjokes. A CI/CD pipelin
 | Task | Read |
 |---|---|
 | Any change | this file |
-| Change the shipped model, `pipeline/`, or `MODEL_NAME` | `.claude/skills/model-release/SKILL.md` |
+| Change or ship the model, `candidate.yaml`, `pipeline/`, or `MODEL_NAME` | `.claude/skills/model-release/SKILL.md` |
 | Workflows, VCL, secrets, Hugging Face storage | `docs/pipeline.md` |
 | Run research experiments on the GPU | `docs/pipeline.md` "Experiments", `pipeline/experiment.py` |
 | Experiments, results, past decisions | `PROJECT_NOTES.md` (newest first), `MODEL_LOG.md` |
@@ -36,7 +36,7 @@ Flow: feature branch → `dev` → `release` (deploys). `dev` is the default bra
 
 - Branch from `origin/dev`. Name it `<your name>/<topic>`, for example `owen/deberta-pipeline`.
 - Open the PR into `dev`. Never push directly to `dev` or `release`.
-- Required on `dev`: `lint-test`. Required on `release`: `trained-candidate`.
+- Required on `dev`: `lint-test`. Required on `release`: `trained-candidate` (the `release-check` job).
 - Keep one topic per PR. Put research code and pipeline changes in separate PRs when you can.
 - In the PR body, say what changed, how you tested it, and give any metric with its split.
 - Before you open the PR, merge `origin/dev` into your branch and run the checks below.
@@ -56,33 +56,33 @@ pytest -q tests         # with requirements-ci.txt installed, as CI does
 
 ## What a merge into `dev` does
 
-A push to `dev` that changes any of these starts a GPU training run (`train-eval`):
-- `*.py` at the repo root
-- `pipeline/**`
-- `docker/train.Dockerfile`
-- `requirements.txt`
+Nothing on the GPU. A model is trained once, in an experiment, and only scored after that:
 
-So a change to a root `.py` file, even a research script, retrains the shipped model. That is expected. Each run
-takes the GPU queue for about 12–25 minutes, so don't merge many small root-level changes one at a time.
+1. **Experiment** (feature branch): push `experiments/<name>.yaml`. Each run is trained on a VCL GPU, scored on
+   validation and stored on Hugging Face. The PR gets a table (see "GPUs and compute").
+2. **Choose** on validation: set `candidate.yaml` to the run's folder (`path`), `name` and `type`. Merge into `dev`.
+3. **Release** (`dev` → `release` PR): `release-check` scores those saved weights and the deployed champion with
+   `pipeline/evaluate.py` on the same pinned test data. It fails if `pr_auc` or `top10_hit_rate` drops more than
+   0.01 below the champion's. It runs again on every push to `dev` while that PR is open, about 15–30 minutes each.
+4. **Deploy** (merge into `release`): ships exactly the revision that was scored.
 
-The run trains with `pipeline/train.py`. It scores the new model and the deployed champion with `pipeline/evaluate.py`
-on the same pinned test data. The gate fails if `pr_auc` or `top10_hit_rate` drops more than 0.01 below the
-champion's. The candidate is uploaded to `zachnorton03/reddit-post-predictor-models` under `models/<MODEL_NAME>/`.
+`train-eval` (retrain `pipeline/train.py`'s model) is manual only. Use it to retrain that model, for example on new
+data.
 
 ## Changing the model
 
 Follow `.claude/skills/model-release/SKILL.md`. In short:
-1. Reuse or extend the code in a root module (for example `dadjokes_models.py`). Keep the existing defaults so other
-   scripts keep working.
-2. In `pipeline/train.py`, set `MODEL_NAME` by hand: `<source .py name>-<param count>[-<detail>...]`, lowercase, no
-   dates. Example: `dadjokes_models-22M-minilm_l6`. Change it whenever the model changes.
-3. Write `type` in `model.json` and add a loader for that type in `pipeline/evaluate.py`'s `LOADERS`.
-   **Never remove the loader for the deployed type**, because evaluate also scores the champion.
-4. Run a small local subset (`--max-train 5000 --epochs 1`), then a real run on your branch:
-   `gh workflow run train-eval.yml --ref <your-branch>`. Link the run in the PR.
+1. Add the model to an experiment runner (for example `run_pooling.py`, saving with `prototype_models.train`) and
+   train it with an experiment config. Keep the existing defaults so other scripts keep working.
+2. Name it: `<source .py name>-<param count>[-<detail>...]`, lowercase, no dates. Example:
+   `run_pooling-435M-deberta_large_attn4`.
+3. Its `type` must have a loader in `pipeline/evaluate.py`'s `LOADERS` (`prototype` for runs saved by
+   `prototype_models.train`). **Never remove the loader for the deployed type**, because the release check also
+   scores the champion.
+4. Set `candidate.yaml`, merge into `dev`, and open the `dev` → `release` PR.
 
 The commands and file contracts are in `docs/pipeline.md` under "Contracts the workflows rely on". Don't change
-them without updating the workflows, `infra/ansible/train.yml` and that doc in the same PR.
+them without updating the workflows, the Ansible playbooks and that doc in the same PR.
 
 ## Data and evaluation rules
 

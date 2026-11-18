@@ -1,5 +1,36 @@
 # Project notes: EDA and baselines (handoff)
 
+## Update 2026-11-18: DeBERTa-large seeds (attention vs mean pooling)
+
+Question: does DeBERTa-v3-large hold its one-seed gain over base, and does 4-query attention pooling matter on
+large? Config `experiments/deberta_large_seeds.yaml`, commit `5e83692`,
+[run 44147572268](https://github.com/zachnorton14/reddit-post-predictor/actions/runs/44147572268) (8 h 30 min on
+one L40S reservation). Weights: `zachnorton03/reddit-post-predictor-models` →
+`experiments/deberta_large_seeds/5e83692/`. Table: `results/pooling/deberta_large_seeds_l40s.csv` (seed 42 of attn4
+is in `deberta_ladder_l40s.csv`).
+
+- **Setup:** as in the DeBERTa ladder below: train 2019–2023 (174,043), validation 2024 (29,760), pinned revision
+  `e02c2b6`, 256 tokens, timing embeddings, lr 1e-5, effective batch 128, 3 epochs, best epoch by validation AP.
+  Test not scored.
+
+| Model | Seeds | Val AP (mean ± SD) | Top-10% hit | Spearman |
+|---|---:|---:|---:|---:|
+| deberta_large_attn4 | 42, 43, 44 | 0.2704 ± 0.0060 | 31.0% | 0.421 |
+| deberta_large_mean | 42, 43, 44 | 0.2700 ± 0.0006 | 31.4% | 0.416 |
+| deberta_base (Owen's spec, for reference) | 42 | 0.2609 | 30.5% | 0.400 |
+
+Per seed, attn4: 0.2673, 0.2773, 0.2667; mean: 0.2706, 0.2693, 0.2701.
+
+What it means:
+- Large beats base by about +0.009 AP and +0.02 Spearman, now on three seeds (base still has one seed here and
+  0.2569 in Owen's run). The gain is real but small.
+- Attention pooling does not matter on large: the means differ by 0.0004 AP. Mean pooling is ten times more stable
+  across seeds (SD 0.0006 against 0.0060) and is simpler, so it is the better choice.
+- The top-10% hit rate is 31–31.5%, the best on validation so far but still short of 35% (see the ceiling check).
+- Recommended ship candidate: `deberta_large_mean`. It needs the planned "prototype" loader in
+  `pipeline/evaluate.py` before the gate can score it on test.
+- PR #25 was merged before this run ended, so the workflow put the table in the run summary, not on a PR.
+
 ## 2026-11-17 — averaging the saved DeBERTa checkpoints
 
 On r/dadjokes, an equal-weight average of DeBERTa-large attention seeds 42/43/44
@@ -29,6 +60,147 @@ Use `--model large3` for the three-checkpoint version. The scorer uses the Trans
 runtime in `requirements.txt` and loads one encoder at a time. Reloading the four weights
 on a laptop GPU reproduced the ranking of eight seed-42 sampled validation posts, with a
 maximum absolute difference of 0.0095 in predicted log engagement (rounded up).
+
+## Update 2026-11-17: a context-free "good post" score
+
+Question: can the model say whether a post is good, whatever its luck? Code: `prototype_models.CONTEXT`,
+`typical_context`, `neutral_context`, and `scripts/good_post_check.py`. Results: `results/good_post/<run>/`.
+
+- **Score:** a model's prediction with the posting context fixed to the most typical training values (12:00,
+  Saturday, July, median subreddit activity, no author flair, median author post count). Only the post itself
+  changes the score. Reported as a percentile of 2024 validation scores.
+- **Models:** `minilm_attn4` seed 42 (Mac) and `deberta_large_attn4` seed 42 (L40S weights from
+  `experiments/deberta_ladder/44db5e4/`, scored on the Mac; its full-context Spearman 0.4230 matches the GPU run).
+- **Check:** 2024 validation only. 1,541 posts are copies of 588 jokes that appear more than once in 2024. For each,
+  the target is the mean engagement percentile of the other copies, so one post's luck is averaged out.
+
+| Predictor of the other copies' mean | MiniLM | DeBERTa-large |
+|---|---:|---:|
+| this copy's own result (what actually happened) | 0.396 | 0.396 |
+| full model prediction (with real context) | 0.345 | 0.412 |
+| quality score (context fixed) | 0.359 | 0.412 |
+
+Quality bands, DeBERTa-large (all 29,760 validation posts):
+
+| Quality band | Posts | Top-10% rate | Median outcome percentile |
+|---|---:|---:|---:|
+| bad (bottom 30%) | 8,928 | 2.4% | 29% |
+| average (30–70%) | 11,904 | 7.5% | 51% |
+| good (70–90%) | 5,952 | 15.9% | 65% |
+| great (top 10%) | 2,976 | 31.1% | 79% |
+
+What it means:
+- Fixing the context costs almost nothing against a post's own result (Spearman 0.420 against 0.423 for the full
+  DeBERTa-large model). Context explains little of what the model knows.
+- With DeBERTa-large, the score predicts a joke's average across copies as well as one real outcome does (0.412
+  against 0.396). The difference is within noise (588 jokes, roughly ±0.03), so say "as well as", not "better".
+- The bands separate well: a "great" post reaches the top 10% 13 times as often as a "bad" one (31.1% against
+  2.4%). MiniLM gives 29.7% against 3.3%.
+- One seed per model. The band cut-offs (30/70/90%) are a presentation choice, not tuned.
+
+## Update 2026-11-17: how much posting-time signal is left (ceiling check)
+
+Question: is there signal the model is missing, or is it near what text and posting-time data allow? Script:
+`scripts/ceiling_check.py`. Results: `results/ceiling/summary.json`, `results/ceiling/gain.csv`.
+
+- **Setup:** r/dadjokes, train 2019–2023 and validation 2024 (29,760 posts, base rate 10.0%). Test not loaded.
+  History features use only earlier posts at least 7 days old, so their scores have settled. The gain check adds
+  features to the `minilm_attn4` seed-42 validation predictions with a logistic regression, fit on one half of
+  2024 and scored on the other (two folds by time).
+- **Copies of the same joke disagree.** 2,281 validation posts (7.7%) repeat an earlier joke exactly (same
+  normalized title and body). The engagement percentiles of the two copies have Spearman 0.355. The model's
+  validation Spearman is already 0.40 (MiniLM) to 0.42 (DeBERTa-large). Much of the outcome is not in the text.
+- **The missing signals exist on their own.** 62% of validation posts have settled author history. The author's
+  earlier mean percentile has Spearman 0.215 with the new post. When the earlier copy of a repost made the top 10%,
+  the repost does too 33.6% of the time, against 11.8% otherwise. The model already sees `log_author_prev_posts`
+  and `is_repost`, but not these outcomes.
+- **They add nothing over the model:**
+
+| Inputs | Val AP | Top-10% hit |
+|---|---:|---:|
+| model only | 0.2402 | 29.0% |
+| + author history (count, mean percentile, top-10% rate) | 0.2288 | 28.9% |
+| + repost history (earlier copies' percentile) | 0.2420 | 29.4% |
+| + both | 0.2369 | 29.2% |
+
+What it means:
+- Author history hurts slightly; text style and post count already carry it. The repost gain (+0.002) is seed noise.
+- Remaining gains are small: DeBERTa-large (+0.006 AP, one seed) and averaging seeds or models.
+- The top-10% hit rate has stayed at 29–31% on validation for every model. 35% on 2024 validation looks out of
+  reach. The earlier 34.4% was on the test period, a different year.
+- One seed of one model and a linear combiner; a feature inside the network could do a little better, but the
+  repost agreement of 0.355 limits how much.
+
+## Update 2026-11-17: DeBERTa ladder on a VCL L40S (one seed)
+
+Question: do the MiniLM ladder changes (256 tokens, timing embeddings, attention pooling) help DeBERTa-v3, and
+does DeBERTa-v3-large beat base? Runner: `run_pooling.py` through the experiment workflow
+(`experiments/deberta_ladder.yaml`, commit `44db5e4`, [run 44106600151](https://github.com/zachnorton14/reddit-post-predictor/actions/runs/44106600151)).
+Weights: `zachnorton03/reddit-post-predictor-models` → `experiments/deberta_ladder/44db5e4/`. Table:
+`results/pooling/deberta_ladder_l40s.csv`.
+
+- **Setup:** same data, splits, head and checkpoint choice as the MiniLM ladder below. Train 2019–2023 (174,043),
+  validation 2024 (29,760), pinned dataset revision `e02c2b6`. Seed 42 only. 3 epochs, bf16 autocast, L40S.
+  Base: lr 2e-5, effective batch 128. Large: lr 1e-5, effective batch 128, gradient checkpointing. Test not scored.
+- **Bug fixed first:** the first attempt (run 44011347265) stopped on a non-finite loss in every run. transformers 5
+  loads a checkpoint in its stored dtype, and the DeBERTa-v3 checkpoints are stored in fp16. `Network` now loads
+  the encoder in float32 (`44db5e4`).
+
+| Run | Change | Val AP | Top-10% hit | Spearman | Best epoch | Train min |
+|---|---|---:|---:|---:|---:|---:|
+| deberta_base | Owen's spec (96 tokens, mean pooling) | 0.2609 | 30.5% | 0.400 | 2 | 10 |
+| deberta_attn1 | + 256 tokens, timing embeddings, 1 query | 0.2616 | 30.2% | 0.399 | 2 | 11 |
+| deberta_attn4 | same, 4 queries | 0.2591 | 30.6% | 0.398 | 3 | 15 |
+| deberta_attn10 | same, 10 queries | 0.2593 | 30.8% | 0.395 | 2 | 11 |
+| deberta_large_attn4 | DeBERTa-v3-large, 4 queries | **0.2673** | 30.8% | **0.423** | 2 | 69 |
+
+What it means:
+- `deberta_base` reproduces Owen's result (0.2569 earlier, 0.2609 here). The gap is the size of seed noise.
+- On DeBERTa-base the MiniLM changes did not help: the four base runs are within 0.0025 AP, smaller than the
+  MiniLM seed SD (about 0.005). The MiniLM gain from attention pooling (+0.004 over three seeds) does not show here.
+- Large is the only clear gain: +0.006 AP over the best-matched base run and +0.023 Spearman. The top-10% hit rate
+  did not move (30.2–30.8% for all five). One seed, so the AP gain still needs confirmation.
+- Time: about 10–15 min per base run and 69 min for large, plus about 11 min of overhead per run (data and model
+  download). The job took 2 h 52 min for 116 min of training.
+- Next: seeds 43 and 44 of `deberta_large_attn4`, and `deberta_large_mean` (seeds 42–44) to test whether attention
+  pooling matters on large. Five large runs take about 6.7 h, so they fit one overnight reservation.
+
+## Update 2026-11-16: input length, timing embeddings and attention pooling (MiniLM ladder)
+
+Question: does the fine-tuned encoder lose signal by truncating posts, by reading timing as raw numbers, or by
+averaging all token vectors into one? Code: `prototype_models.py` (new `Spec` options `pooling`, `queries`,
+`time_embed`) and `run_pooling.py` (ladder; `--dataset/--revision` for pinned data). Results:
+`results/pooling/val_metrics.csv`.
+
+- **Setup:** all-MiniLM-L6-v2 with Owen's prototype head (16 metadata features, 128-unit ReLU, MSE on standardized
+  log engagement). Train 2019–2023 (174,043 posts), validation 2024 (29,760). 3 epochs, lr 3e-5, effective batch
+  128, best epoch by validation AP (epoch 2 in every run). Apple M3 Max (MPS, fp32), about 3 min per epoch.
+  **Test was not loaded or scored.**
+- **Truncation:** at 96 tokens 3.2% of dadjokes posts are cut; at 256 tokens with the full body, 0.2%.
+- **Timing embeddings:** learned vectors for local hour (8), weekday (4) and month (4) replace the three
+  standardized columns, so 11pm and midnight are no longer at opposite ends of one number.
+- **Attention pooling:** K learned queries each take a softmax-weighted average of the last-layer token vectors;
+  the head reads all K. Queries start at zero, which equals mean pooling.
+
+Seed 42, one change per rung (validation AP): base 0.2481; + 256 tokens and full body 0.2498; + timing embeddings
+0.2533; + attention pooling with 1 / 4 / 10 queries 0.2530 / 0.2535 / 0.2531.
+
+Three seeds (42, 43, 44), validation:
+
+| Rung | AP mean ± SD | Top-10% hit | Spearman |
+|---|---:|---:|---:|
+| base (96 tokens, mean pooling) | 0.2440 ± 0.0059 | 28.8% | 0.363 |
+| + 256 tokens, full body, timing embeddings | 0.2469 ± 0.0055 | 28.7% | 0.358 |
+| + attention pooling, 4 queries | **0.2506 ± 0.0034** | 29.2% | 0.367 |
+
+- Attention pooling (4 queries) beat the timing-only rung on every seed (+0.0003, +0.0066, +0.0039) and the base
+  on every seed (mean +0.0066 AP). It is the most consistent change, but small: seed SD is about 0.005 AP and the
+  top-10% hit rate barely moves.
+- Longer inputs + timing embeddings vs. base is mixed (+0.0051, +0.0074, −0.0037): not established.
+- Seed 42 alone suggested attention pooling did nothing; the extra seeds reversed that. Use at least 3 seeds for
+  changes of this size.
+- Next: `deberta_large_attn4` (256 tokens, timing embeddings, 4-query attention) on a VCL L40S through the experiment
+  workflow (PR #24), one seed first to measure time. Compare with Owen's DeBERTa-base (validation AP 0.2569).
 
 ## Update 2026-11-15: DeBERTa interruption recovery
 

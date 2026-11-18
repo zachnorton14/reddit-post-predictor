@@ -87,7 +87,7 @@ jobs:
       - name: Tag the image by the files that define it (same tag as train-eval)
         id: tag
         run: |
-          ref="${IMAGE,,}:${{ hashFiles('docker/train.Dockerfile', 'requirements.txt', '*.py', 'pipeline/**') }}"
+          ref="${IMAGE,,}:${{ hashFiles('docker/train.Dockerfile', 'requirements.txt', '*.py', 'pipeline/**', 'scripts/**') }}"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
       - uses: docker/login-action@v3
         with:
@@ -110,6 +110,8 @@ jobs:
     needs: [plan, image]
     runs-on: [self-hosted, Linux]
     environment: vcl
+    outputs:
+      summary_artifact_id: ${{ steps.upload_summaries.outputs.artifact-id }}
     # A student L40S reservation lasts at most 600 minutes. Stop 10 minutes early so the reservation can be ended.
     timeout-minutes: 590
     permissions:
@@ -179,6 +181,7 @@ jobs:
             -e "{\"configs\": $(python -c 'import json,os,sys; print(json.dumps([os.path.abspath(c) for c in sys.argv[1:]]))' $CONFIGS)}"
 
       - uses: actions/upload-artifact@v4
+        id: upload_summaries
         if: always()
         with:
           name: experiment-summaries
@@ -203,6 +206,7 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/download-artifact@v4
+        if: needs.experiment.outputs.summary_artifact_id != ''
         with:
           name: experiment-summaries
           path: summaries

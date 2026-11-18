@@ -91,6 +91,17 @@ class PrototypeTests(unittest.TestCase):
         net = pm.Network(replace(self.spec(), source=str(source)))
         self.assertEqual({p.dtype for p in net.parameters()}, {torch.float32})
 
+    def test_neutral_context_changes_only_context_columns(self):
+        d = frame(6, "2020-01-01")
+        context = pm.typical_context(d)
+        self.assertEqual(set(context), set(pm.CONTEXT))
+        n = pm.neutral_context(d, context)
+        for c in pm.CONTEXT:
+            self.assertTrue((n[c] == n[c].iloc[0]).all())
+            self.assertEqual(n[c].dtype, d[c].dtype)
+        rest = [c for c in d.columns if c not in pm.CONTEXT]
+        pd.testing.assert_frame_equal(n[rest], d[rest])
+
     def test_deberta_checkpointing_accumulates_gradients(self):
         source = self.root / "tiny_deberta"
         model = DebertaV2Model(DebertaV2Config(vocab_size=16, hidden_size=16,

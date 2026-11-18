@@ -1,10 +1,9 @@
-# Deploy the model that passed the gate when its pull request merges into `release`, then record it.
+# Deploy the model that passed the release check when its pull request merges into `release`, then record it.
 #
-# The model is not retrained. This workflow takes the `candidate` artifact from the train-eval run that
-# scripts/find_candidate.sh picks for the merged pull request (the one release-check approved). It bakes the
-# model into an inference image, deploys it, publishes a GitHub release `model-<n>` (metrics.json, run.json),
-# and promotes the model on Hugging Face (champion.json and tag `model-<n>`). The next train-eval run scores
-# the candidate against this champion.
+# The model is not retrained. release-check.yml scored the folder named in candidate.yaml at a pinned Hugging Face
+# revision and uploaded `release-<head commit>` (release.json). This workflow downloads exactly that revision, bakes
+# it into an inference image, deploys it, publishes a GitHub release `model-<n>`, and promotes it on Hugging Face
+# (release.json next to the weights, tag `model-<n>`, champion.json). The next release check scores against it.
 name: deploy
 
 on:
@@ -34,21 +33,32 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - name: Find the train-eval run that passed for this merge
+      - name: Find the release check that passed for this merge
         id: run
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           head=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].head.sha // empty')
           [ -n "$head" ] || { echo "::error::${{ github.sha }} did not come from a pull request"; exit 1; }
-          id=$(scripts/find_candidate.sh "$head")
+          id=$(gh api "repos/${{ github.repository }}/actions/artifacts?name=release-$head" \
+            --jq '[.artifacts[] | select(.expired | not)][0].workflow_run.id // empty')
+          [ -n "$id" ] || { echo "::error::No passing release check for ${head:0:7} (artifact release-$head)"; exit 1; }
           echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "head=$head" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
-          name: candidate
-          path: model
+          name: release-${{ steps.run.outputs.head }}
+          path: release
           run-id: ${{ steps.run.outputs.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download the scored weights at the pinned revision
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pip install -q pyyaml "huggingface_hub>=0.25"
+          read -r path rev name type < <(python3 -c "import json; r=json.load(open('release/release.json'))
+          print(r['path'], r['revision'], r['name'], r['type'])")
+          python scripts/hf_models.py fetch "$path" "$rev" model --name "$name" --type "$type"
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -63,8 +73,8 @@ jobs:
           echo "image=$ref" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
-          name: model
-          path: model/
+          name: release
+          path: release/
           retention-days: 90
 
   deploy:
@@ -87,19 +97,19 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with:
-          name: model
-          path: model
+          name: release
+          path: release
       - name: Publish the model release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$MODEL_VERSION" model/metrics.json model/run.json \
+          gh release create "$MODEL_VERSION" release/release.json \
             --repo "${{ github.repository }}" --target "${{ github.sha }}" \
             --title "$MODEL_VERSION" \
-            --notes "Image: ${{ needs.build.outputs.image }}"$'\n\n'"$(cat model/metrics.json)"
-      - name: Promote the model on Hugging Face (champion.json and tag)
+            --notes "Image: ${{ needs.build.outputs.image }}"$'\n\n'"$(cat release/release.json)"
+      - name: Promote the model on Hugging Face (release.json, tag and champion.json)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           pip install -q "huggingface_hub>=0.25"
-          python scripts/hf_models.py promote model/run.json "$MODEL_VERSION"
+          python scripts/hf_models.py promote release/release.json "$MODEL_VERSION"

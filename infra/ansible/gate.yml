@@ -1,0 +1,99 @@
+# Score the release candidate and the champion on test on a VCL GPU instance. Nothing is trained.
+#
+# Run by .github/workflows/release-check.yml after `train.yml --tags setup` (Docker and the NVIDIA runtime).
+# Extra vars: image, dataset, revision (dataset commit), candidate_path, candidate_revision, candidate_name,
+# candidate_type, results_dir. Environment: GHCR_USER, GHCR_TOKEN, HF_TOKEN.
+# The instance downloads both models from Hugging Face itself (the weights can be gigabytes); only the metrics come
+# back to the controller.
+- name: Score the release candidate and the champion
+  hosts: vcl
+  become: true
+  vars:
+    workdir: /opt/gate
+    run: >-
+      docker run --rm --gpus all --shm-size 8g -e HF_TOKEN -v {{ workdir }}/out:/out {{ image }}
+  gather_facts: false
+  tasks:
+    - name: Wait for SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+        sleep: 10
+
+    - name: Score both models
+      environment:
+        HF_TOKEN: "{{ lookup('env', 'HF_TOKEN') }}"
+      block:
+        - name: Log in to GHCR
+          ansible.builtin.command:
+            cmd: docker login ghcr.io -u {{ lookup('env', 'GHCR_USER') }} --password-stdin
+            stdin: "{{ lookup('env', 'GHCR_TOKEN') }}"
+          no_log: true
+          changed_when: false
+
+        - name: Pull the training image
+          ansible.builtin.command: docker pull {{ image }}
+          changed_when: true
+
+        - name: Create a clean output directory
+          ansible.builtin.file:
+            path: "{{ workdir }}/out"
+            state: "{{ item }}"
+            mode: "0755"
+          loop: [absent, directory]
+
+        - name: Download the candidate at the pinned revision
+          ansible.builtin.command: >-
+            {{ run }} python scripts/hf_models.py fetch {{ candidate_path }} {{ candidate_revision }} /out/candidate
+            --name {{ candidate_name }} --type {{ candidate_type }}
+          changed_when: true
+
+        - name: Download the champion (the deployed model), if there is one
+          ansible.builtin.command: "{{ run }} python scripts/hf_models.py fetch-champion /out/champion"
+          changed_when: true
+
+        - name: Score the candidate on test
+          ansible.builtin.command: >-
+            {{ run }} python -m pipeline.evaluate --model /out/candidate --dataset {{ dataset }}
+            --revision {{ revision }} --out /out/metrics/metrics.json
+          changed_when: true
+
+        - name: Check for a champion
+          ansible.builtin.stat:
+            path: "{{ workdir }}/out/champion/model.json"
+          register: champion
+
+        - name: Score the champion on the same test data
+          ansible.builtin.command: >-
+            {{ run }} python -m pipeline.evaluate --model /out/champion --dataset {{ dataset }}
+            --revision {{ revision }} --out /out/metrics/champion_metrics.json
+          changed_when: true
+          when: champion.stat.exists
+
+        - name: Package the metrics
+          ansible.builtin.command: tar czf {{ workdir }}/metrics.tgz -C {{ workdir }}/out/metrics .
+          changed_when: true
+      always:
+        - name: Log out of GHCR
+          ansible.builtin.command: docker logout ghcr.io
+          changed_when: false
+          failed_when: false
+
+    - name: Copy the metrics to the controller
+      ansible.builtin.fetch:
+        src: "{{ workdir }}/metrics.tgz"
+        dest: "{{ results_dir }}/metrics.tgz"
+        flat: true
+
+    - name: Unpack the metrics on the controller
+      delegate_to: localhost
+      become: false
+      ansible.builtin.unarchive:
+        src: "{{ results_dir }}/metrics.tgz"
+        dest: "{{ results_dir }}"
+
+    - name: Remove the archive on the controller
+      delegate_to: localhost
+      become: false
+      ansible.builtin.file:
+        path: "{{ results_dir }}/metrics.tgz"
+        state: absent

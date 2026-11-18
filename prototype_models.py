@@ -460,6 +460,22 @@ def train(spec, train_frame, val_frame, output, device=None, resume=False, check
     return output
 
 
+# Posting context: when, how busy the subreddit was, and who posted. The rest of META describes the post itself.
+CONTEXT = ["local_hour", "local_dow", "local_month", "log_posts_prev_hour", "log_posts_prev_day", "has_author_flair",
+           "log_author_prev_posts"]
+
+
+def typical_context(reference):
+    """One fixed posting context from a reference frame (training posts): the most common hour, weekday and month,
+    and the median of the other context columns."""
+    return {c: reference[c].mode().iloc[0] if c in TIME_EMBED else float(reference[c].median()) for c in CONTEXT}
+
+
+def neutral_context(frame, context):
+    """The same posts as if all were posted in one fixed context, so a prediction depends only on the post."""
+    return frame.assign(**{c: frame[c].dtype.type(v) for c, v in context.items()})
+
+
 def predict_checkpoint(path, frame, device=None, legacy=False):
     path = Path(path)
     if legacy:

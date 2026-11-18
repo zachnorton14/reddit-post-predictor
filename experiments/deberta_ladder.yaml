@@ -1,0 +1,14 @@
+# Overnight DeBERTa ladder, seed 42, in priority order: a run cut off by the 10-hour reservation loses only itself,
+# and a re-run on the same commit skips the runs already on Hugging Face.
+#   deberta_base         = Owen's DeBERTa-base (96 tokens, mean pooling), re-trained here as the L40S reference
+#   deberta_attn4        + 256 tokens, timing embeddings, 4-query attention pooling (the MiniLM winner)
+#   deberta_large_attn4  the same head on DeBERTa-v3-large
+#   deberta_attn1/10     the query-count check on base
+runner: run_pooling.py
+runs:
+  - {model: deberta_base, seeds: [42]}
+  - {model: deberta_attn4, seeds: [42]}
+  - {model: deberta_large_attn4, seeds: [42]}
+  - {model: deberta_attn1, seeds: [42]}
+  - {model: deberta_attn10, seeds: [42]}
+allow_fallback: false

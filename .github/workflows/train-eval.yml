@@ -1,6 +1,9 @@
-# Train and evaluate a candidate model on a VCL GPU instance whenever model code lands on `dev`.
-# The run's `gate` result attaches to that commit. A `dev` -> `release` pull request is allowed only when
-# release-check.yml finds a passing run for the latest model change (see docs/pipeline.md).
+# Train pipeline/train.py's model (MODEL_NAME) on a VCL GPU instance and score it against the champion. Manual only:
+#   gh workflow run train-eval.yml --ref <branch>
+# Merging into `dev` no longer retrains anything. Research models are trained once by experiment.yml; to ship a model,
+# name its folder in candidate.yaml and release-check.yml scores those saved weights. Use this workflow to retrain the
+# pipeline/train.py model (for example on new data). Its upload, models/<MODEL_NAME>/model, can be named in
+# candidate.yaml too.
 #
 #   image (hosted) ──► train-eval (self-hosted controller) ──► gate (hosted)
 #
@@ -11,10 +14,6 @@
 name: train-eval
 
 on:
-  push:
-    branches: [dev]
-    # Files that change the trained model. Keep in sync with MODEL_PATHS in scripts/find_candidate.sh.
-    paths: ["*.py", "pipeline/**", "docker/train.Dockerfile", "requirements.txt"]
   workflow_dispatch:
     inputs:
       smoke:
@@ -36,7 +35,7 @@ env:
 
 jobs:
   image:
-    # Push and manual events only run code from this repo, never forks.
+    # Manual runs only run code from this repo, never forks.
     if: ${{ !inputs.smoke }}
     runs-on: ubuntu-latest
     permissions:
@@ -49,7 +48,7 @@ jobs:
       - name: Tag the image by the files that define it
         id: tag
         run: |
-          ref="${IMAGE,,}:${{ hashFiles('docker/train.Dockerfile', 'requirements.txt', '*.py', 'pipeline/**') }}"
+          ref="${IMAGE,,}:${{ hashFiles('docker/train.Dockerfile', 'requirements.txt', '*.py', 'pipeline/**', 'scripts/**') }}"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
       - uses: docker/login-action@v3
         with:
@@ -107,7 +106,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python scripts/hf_models.py fetch-champion champion
-          if [ -f champion/model/model.json ]; then echo "dir=$PWD/champion" >> "$GITHUB_OUTPUT"; fi
+          if [ -f champion/model.json ]; then echo "dir=$PWD/champion" >> "$GITHUB_OUTPUT"; fi
 
       - name: Reserve a GPU instance
         id: vcl

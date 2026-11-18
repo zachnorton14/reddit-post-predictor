@@ -3,7 +3,8 @@
     python scripts/compare_metrics.py candidate/metrics.json production/metrics.json
 
 Both files are JSON objects with at least the keys in GATED. A missing production file (no model has been
-released yet) passes. Exit status 1 blocks the merge into `release`.
+released yet) passes. If both have `rows` (pipeline.evaluate's hash of the scored post ids), they must match.
+Exit status 1 blocks the merge into `release`.
 """
 
 import json
@@ -21,6 +22,8 @@ def compare(candidate: dict, production: dict | None) -> list[str]:
         return [f"candidate metrics lack {', '.join(missing)}"]
     if production is None:
         return []
+    if candidate.get("rows") and production.get("rows") and candidate["rows"] != production["rows"]:
+        return ["candidate and production were scored on different posts (rows differ)"]
     return [
         f"{m}: {candidate[m]:.4f} vs. production {production[m]:.4f} (drop > {tol})"
         for m, tol in GATED.items()
