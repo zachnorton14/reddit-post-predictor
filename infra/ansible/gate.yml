@@ -11,7 +11,7 @@
   vars:
     workdir: /opt/gate
     run: >-
-      docker run --rm --gpus all --shm-size 8g -e HF_TOKEN -v {{ workdir }}/out:/out {{ image }}
+      docker run --rm --gpus all --shm-size 8g -e HF_TOKEN -e EVAL_CACHE=/out/eval_cache -v {{ workdir }}/out:/out {{ image }}
   gather_facts: false
   tasks:
     - name: Wait for SSH

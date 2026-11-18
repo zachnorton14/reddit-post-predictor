@@ -10,6 +10,7 @@ from unittest import mock
 import numpy as np
 import pandas as pd
 
+from pipeline import data as pdata
 from pipeline import evaluate, train
 from scripts.hf_models import NAME
 
@@ -113,6 +114,26 @@ class EvaluateTest(unittest.TestCase):
         with self.assertRaises(SystemExit) as e:
             self.run_evaluate({"type": "nope"}, {"fake": mock.Mock()})
         self.assertIn("unknown model type 'nope'", str(e.exception))
+
+
+class LoadEvalTest(unittest.TestCase):
+    def test_labels_once_per_revision_then_reads_the_cache(self):
+        frames = {"train": fake_test_split(4), "val": fake_test_split(2000), "test": fake_test_split(2400)}
+        fake = SimpleNamespace(con=mock.Mock(), **frames)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict("os.environ", {"EVAL_CACHE": tmp}), \
+                mock.patch.object(pdata, "snapshot_download", return_value=tmp) as download, \
+                mock.patch.object(pdata.tb, "load_data", return_value=fake) as load:
+            first = pdata.load_eval("o/d", "r1")
+            again = pdata.load_eval("o/d", "r1")
+            self.assertEqual(load.call_count, 1)
+            self.assertEqual(download.call_count, 1)
+            self.assertEqual(load.call_args.args[0].source, f"{tmp}/data/*/*/*.parquet")
+            pdata.load_eval("o/d", "r2")  # another revision is labeled again
+            self.assertEqual(load.call_count, 2)
+        for d in (first, again):
+            pd.testing.assert_frame_equal(d.test, frames["test"])
+            pd.testing.assert_frame_equal(d.val, frames["val"])
+        self.assertNotEqual(pdata.eval_cache_key("o/d", "r1", 1000, 10), pdata.eval_cache_key("o/d", "r1", None, 10))
 
 
 if __name__ == "__main__":
