@@ -14,11 +14,15 @@ from pipeline import evaluate, train
 from scripts.hf_models import NAME
 
 
-def fake_test_split(n=200):
+def fake_test_split(n=2400, subs=("a", "b")):
+    """n posts split evenly over `subs`, each labeled top 10% within its subreddit."""
     rng = np.random.default_rng(0)
-    metric = rng.normal(size=n)
-    return pd.DataFrame({"metric_pct": pd.Series(metric).rank(pct=True), "label": (metric > np.quantile(metric, 0.9))
-                         .astype(int), "title": "t", "body": "b"})
+    parts = []
+    for sub in subs:
+        metric = pd.Series(rng.normal(size=n // len(subs)))
+        parts.append(pd.DataFrame({"subreddit": sub, "metric_pct": metric.rank(pct=True),
+                                   "label": (metric > metric.quantile(0.9)).astype(int), "title": "t", "body": "b"}))
+    return pd.concat(parts, ignore_index=True)
 
 
 class TrainTest(unittest.TestCase):
@@ -50,7 +54,7 @@ class EvaluateTest(unittest.TestCase):
 
     def run_evaluate(self, meta, loaders):
         (self.model / "model.json").write_text(json.dumps(meta))
-        with mock.patch.object(evaluate, "load_pinned", return_value=self.data) as load, \
+        with mock.patch.object(evaluate, "load_eval", return_value=self.data) as load, \
                 mock.patch.dict(evaluate.LOADERS, loaders, clear=True):
             evaluate.main(["--model", str(self.model), "--dataset", "o/d", "--revision", "abc", "--out", str(self.out)])
         load.assert_called_once_with("o/d", "abc", body_chars=1000)
@@ -60,36 +64,50 @@ class EvaluateTest(unittest.TestCase):
         self.run_evaluate({"type": "fake"}, {"fake": fake})
         self.assertEqual(fake.call_args.args[0], self.model)
         result = json.loads(self.out.read_text())
-        self.assertEqual(set(result), {"pr_auc", "top10_hit_rate", "spearman", "n_test"})
+        self.assertEqual(set(result), {"pr_auc", "top10_hit_rate", "spearman", "n_test", "macro_subreddits",
+                                       "by_subreddit"})
         self.assertEqual(result["top10_hit_rate"], 1.0)  # a perfect ranking hits every top-10% post
-        self.assertEqual(result["n_test"], 200)
+        self.assertEqual(result["n_test"], 2400)
+        self.assertEqual(result["macro_subreddits"], ["a", "b"])
         self.assertFalse(any(f.name != "model.json" for f in self.model.iterdir()))
 
     def test_val_split_scores_validation(self):
-        self.data.val = fake_test_split(120)
+        self.data.val = fake_test_split(2000)
         fake = mock.Mock(side_effect=lambda d, m, data: data.test.metric_pct.to_numpy())
         (self.model / "model.json").write_text(json.dumps({"type": "fake"}))
-        with mock.patch.object(evaluate, "load_pinned", return_value=self.data), \
+        with mock.patch.object(evaluate, "load_eval", return_value=self.data), \
                 mock.patch.dict(evaluate.LOADERS, {"fake": fake}, clear=True):
             evaluate.main(["--model", str(self.model), "--dataset", "o/d", "--revision", "abc", "--out", str(self.out),
                            "--split", "val"])
         result = json.loads(self.out.read_text())
-        self.assertEqual(result["n_val"], 120)
+        self.assertEqual(result["n_val"], 2000)
         self.assertNotIn("n_test", result)
-        self.assertEqual(len(self.data.test), 200)  # the caller's data is not changed
+        self.assertEqual(len(self.data.test), 2400)  # the caller's data is not changed
 
     def test_prototype_runs_read_full_bodies_and_rows_are_hashed(self):
         self.assertIn("prototype", evaluate.LOADERS)
-        self.data.test["id"] = [f"p{i}" for i in range(200)]
+        self.data.test["id"] = [f"p{i}" for i in range(2400)]
         fake = mock.Mock(side_effect=lambda d, m, data: data.test.metric_pct.to_numpy())
         (self.model / "model.json").write_text(json.dumps({"type": "prototype"}))
-        with mock.patch.object(evaluate, "load_pinned", return_value=self.data) as load, \
+        with mock.patch.object(evaluate, "load_eval", return_value=self.data) as load, \
                 mock.patch.dict(evaluate.LOADERS, {"prototype": fake}, clear=True):
             evaluate.main(["--model", str(self.model), "--dataset", "o/d", "--revision", "abc", "--out", str(self.out)])
         load.assert_called_once_with("o/d", "abc", body_chars=None)
         rows = json.loads(self.out.read_text())["rows"]
         self.assertEqual(rows, evaluate.rows_hash(self.data.test.iloc[::-1]))  # order doesn't matter
         self.assertNotEqual(rows, evaluate.rows_hash(self.data.test.iloc[1:]))
+
+    def test_macro_average_counts_each_big_subreddit_once(self):
+        # "a" ranked perfectly, "b" ranked backwards, "tiny" (under MIN_POSTS) ranked perfectly but left out
+        frame = pd.concat([fake_test_split(2400, ("a", "b")), fake_test_split(100, ("tiny",))], ignore_index=True)
+        p = np.where(frame.subreddit == "b", -frame.metric_pct, frame.metric_pct)
+        result = evaluate.metrics(frame, p)
+        self.assertEqual(result["macro_subreddits"], ["a", "b"])
+        self.assertEqual(result["by_subreddit"]["a"]["top10_hit_rate"], 1.0)
+        self.assertEqual(result["by_subreddit"]["b"]["top10_hit_rate"], 0.0)
+        self.assertEqual(result["by_subreddit"]["tiny"]["n"], 100)
+        self.assertAlmostEqual(result["top10_hit_rate"], 0.5)
+        self.assertAlmostEqual(result["spearman"], 0.0)
 
     def test_unknown_type_fails_clearly(self):
         with self.assertRaises(SystemExit) as e:
