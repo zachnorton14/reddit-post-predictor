@@ -48,6 +48,11 @@ LADDER = {
                                          pooling="attention", queries=k) for k in (1, 4, 10)},
     "deberta_large_mean": replace(_minilm, name="deberta_large_mean", **_large, **_long, time_embed=True),
 }
+# Same seed, optimizer, metadata and pooling as each joint control. The shared encoder reads
+# the title and body separately and the interaction head compares the two representations.
+for control in ("deberta_attn4", "deberta_large_attn4"):
+    name = f"{control}_interaction"
+    LADDER[name] = replace(LADDER[control], name=name, architecture="interaction")
 
 
 def ensure_pretrained(spec):
@@ -68,19 +73,12 @@ def data_splits(dataset=None, revision=None):
     workflow). Without: from the local extract, cached once as Parquet with the manifest load_data looks for.
     """
     if dataset:
-        import tempfile
+        from pipeline.data import load_pinned
 
-        from huggingface_hub import snapshot_download
-
-        import textonly_baselines as tb
-        root = snapshot_download(dataset, repo_type="dataset", revision=revision, allow_patterns="data/dadjokes/**")
-        data = tb.load_data(tb.Config(source=f"{root}/data/dadjokes/*/*.parquet", body_chars=None,
-                                      max_train_per_sub=10**9, max_eval_per_sub=10**9))
-        frame = pd.concat([getattr(data, s).assign(split=s) for s in ("train", "val", "test")])
-        data.con.close()
-        with tempfile.TemporaryDirectory() as tmp:
-            frame.to_parquet(Path(tmp) / "splits.parquet", index=False)
-            return load_data(Path(tmp) / "splits.parquet")
+        data = load_pinned(dataset, revision, body_chars=None, validation_only=True)
+        if pd.concat([data.train.id, data.val.id]).duplicated().any():
+            raise ValueError("Duplicate post IDs in the experiment data")
+        return {s: getattr(data, s).sort_values(["created_at", "id"]).reset_index(drop=True) for s in ("train", "val")}
     if not CACHE.exists():
         parts = load_data()
         CACHE.parent.mkdir(parents=True, exist_ok=True)

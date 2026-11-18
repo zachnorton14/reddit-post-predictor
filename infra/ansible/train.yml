@@ -8,6 +8,10 @@
 - name: Train and evaluate on the GPU instance
   hosts: vcl
   become: true
+  module_defaults:
+    ansible.builtin.apt:
+      # Fresh VCL images can still be applying unattended Ubuntu updates when SSH becomes ready.
+      lock_timeout: 900
   vars:
     workdir: /opt/train
     nvidia_keyring: /etc/apt/keyrings/nvidia-container-toolkit.asc

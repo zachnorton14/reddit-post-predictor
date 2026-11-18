@@ -58,7 +58,7 @@ class EvaluateTest(unittest.TestCase):
         with mock.patch.object(evaluate, "load_eval", return_value=self.data) as load, \
                 mock.patch.dict(evaluate.LOADERS, loaders, clear=True):
             evaluate.main(["--model", str(self.model), "--dataset", "o/d", "--revision", "abc", "--out", str(self.out)])
-        load.assert_called_once_with("o/d", "abc", body_chars=1000)
+        load.assert_called_once_with("o/d", "abc", body_chars=1000, validation_only=False)
 
     def test_dispatches_on_type_and_writes_gated_metrics(self):
         fake = mock.Mock(side_effect=lambda d, m, data: data.test.metric_pct.to_numpy())
@@ -76,12 +76,13 @@ class EvaluateTest(unittest.TestCase):
         self.data.val = fake_test_split(2000)
         fake = mock.Mock(side_effect=lambda d, m, data: data.test.metric_pct.to_numpy())
         (self.model / "model.json").write_text(json.dumps({"type": "fake"}))
-        with mock.patch.object(evaluate, "load_eval", return_value=self.data), \
+        with mock.patch.object(evaluate, "load_eval", return_value=self.data) as load, \
                 mock.patch.dict(evaluate.LOADERS, {"fake": fake}, clear=True):
             evaluate.main(["--model", str(self.model), "--dataset", "o/d", "--revision", "abc", "--out", str(self.out),
                            "--split", "val"])
         result = json.loads(self.out.read_text())
         self.assertEqual(result["n_val"], 2000)
+        load.assert_called_once_with("o/d", "abc", body_chars=1000, validation_only=True)
         self.assertNotIn("n_test", result)
         self.assertEqual(len(self.data.test), 2400)  # the caller's data is not changed
 
@@ -93,7 +94,7 @@ class EvaluateTest(unittest.TestCase):
         with mock.patch.object(evaluate, "load_eval", return_value=self.data) as load, \
                 mock.patch.dict(evaluate.LOADERS, {"prototype": fake}, clear=True):
             evaluate.main(["--model", str(self.model), "--dataset", "o/d", "--revision", "abc", "--out", str(self.out)])
-        load.assert_called_once_with("o/d", "abc", body_chars=None)
+        load.assert_called_once_with("o/d", "abc", body_chars=None, validation_only=False)
         rows = json.loads(self.out.read_text())["rows"]
         self.assertEqual(rows, evaluate.rows_hash(self.data.test.iloc[::-1]))  # order doesn't matter
         self.assertNotEqual(rows, evaluate.rows_hash(self.data.test.iloc[1:]))
@@ -120,21 +121,30 @@ class LoadEvalTest(unittest.TestCase):
     def test_labels_once_per_revision_then_reads_the_cache(self):
         frames = {"train": fake_test_split(4), "val": fake_test_split(2000), "test": fake_test_split(2400)}
         fake = SimpleNamespace(con=mock.Mock(), **frames)
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict("os.environ", {"EVAL_CACHE": tmp}), \
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict("os.environ", {"EVAL_CACHE": f"{tmp}/cache"}), \
                 mock.patch.object(pdata, "snapshot_download", return_value=tmp) as download, \
                 mock.patch.object(pdata.tb, "load_data", return_value=fake) as load:
+            for shard in ("data/a/2023/01.parquet", "data/a/2025/01.parquet"):
+                Path(tmp, shard).parent.mkdir(parents=True, exist_ok=True)
+                Path(tmp, shard).touch()
             first = pdata.load_eval("o/d", "r1")
             again = pdata.load_eval("o/d", "r1")
             self.assertEqual(load.call_count, 1)
             self.assertEqual(download.call_count, 1)
-            self.assertEqual(load.call_args.args[0].source, f"{tmp}/data/*/*/*.parquet")
+            self.assertEqual(load.call_args.args[0].source,
+                             [f"{tmp}/data/a/2023/01.parquet", f"{tmp}/data/a/2025/01.parquet"])
             pdata.load_eval("o/d", "r2")  # another revision is labeled again
             self.assertEqual(load.call_count, 2)
+            # validation scoring never downloads or opens a test-period shard
+            pdata.load_eval("o/d", "r1", validation_only=True)
+            self.assertEqual(load.call_count, 3)
+            self.assertEqual(load.call_args.args[0].source, [f"{tmp}/data/a/2023/01.parquet"])
+            self.assertTrue(load.call_args.kwargs["validation_only"])
+            self.assertNotIn("data/*/2025/*.parquet", download.call_args.kwargs["allow_patterns"])
         for d in (first, again):
             pd.testing.assert_frame_equal(d.test, frames["test"])
             pd.testing.assert_frame_equal(d.val, frames["val"])
         self.assertNotEqual(pdata.eval_cache_key("o/d", "r1", 1000, 10), pdata.eval_cache_key("o/d", "r1", None, 10))
-
 
 if __name__ == "__main__":
     unittest.main()

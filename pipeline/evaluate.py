@@ -95,7 +95,8 @@ def main(argv=None):
     if meta.get("type") not in LOADERS:
         raise SystemExit(f"unknown model type {meta.get('type')!r} in {args.model}/model.json; "
                          f"known types: {', '.join(LOADERS)}")
-    data = load_eval(args.dataset, args.revision, body_chars=BODY_CHARS.get(meta["type"], 1000))
+    data = load_eval(args.dataset, args.revision, body_chars=BODY_CHARS.get(meta["type"], 1000),
+                     validation_only=args.split == "val")
     if args.split == "val":
         # Loaders predict data.test; point it at validation so the loaders need no split argument
         data = copy.copy(data)
