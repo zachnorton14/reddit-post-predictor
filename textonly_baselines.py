@@ -37,7 +37,7 @@ SPLITS = ("train", "val", "test")
 
 @dataclass
 class Config:
-    source: str = "local"            # "local", "hf", or a Parquet glob
+    source: str | list[str] = "local"  # "local", "hf", a Parquet glob, or an explicit shard list
     label_metric: str = "engagement"  # "engagement", "score", or "comments"
     success_quantile: float = 0.9     # success = metric above this quantile of its subreddit and period
     period: str = "quarter"           # "month", "quarter", or "year"
@@ -68,7 +68,7 @@ class Data:
         return getattr(self, split).label.to_numpy()
 
 
-def load_data(cfg):
+def load_data(cfg, *, validation_only=False):
     """Label all posts, then load a capped random sample per subreddit and split into pandas."""
     con = td.connect(cfg.source)
     td.add_labels(con, cfg.label_metric, cfg.success_quantile, cfg.period, cfg.min_period_posts, cfg.self_only)
@@ -90,12 +90,13 @@ def load_data(cfg):
            ln(1 + author_prev_posts)                        AS log_author_prev_posts,
            (title_prev_count > 0)::INT                      AS is_repost
     FROM s
+    {"WHERE split != 'test'" if validation_only else ""}
     QUALIFY row_number() OVER (PARTITION BY split, subreddit ORDER BY hash(id || '{cfg.seed}'))
             <= CASE WHEN split = 'train' THEN {cfg.max_train_per_sub} ELSE {cfg.max_eval_per_sub} END
     """).df()
     parts = {s: df[df.split == s].sort_values("created_at").reset_index(drop=True) for s in SPLITS}
-    for s, d in parts.items():
-        if d.empty:
+    for s in (("train", "val") if validation_only else SPLITS):
+        if parts[s].empty:
             raise ValueError(f"The {s} split is empty. Check train_end/val_end against the extracted months.")
     return Data(cfg, con, parts["train"], parts["val"], parts["test"])
 

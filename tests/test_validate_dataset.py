@@ -4,11 +4,14 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 import duckdb
+import pandas as pd
 
 import textonly_baselines as tb
 import validate_dataset as vd
+from pipeline.data import load_pinned
 
 # Two text posts a day in 2021-01, with the dataset's exact column types
 ROWS_SQL = """
@@ -41,6 +44,26 @@ class ValidateDatasetTest(unittest.TestCase):
 
     def test_clean_dataset_passes(self):
         self.assertEqual(self.failures(self.write()), set())
+
+    def test_validation_only_snapshot_excludes_cached_test_shards(self):
+        root = Path(self.tmp.name)
+        rows = duckdb.sql(ROWS_SQL.replace("range(60)", "range(120)")).df()
+        for year in (2021, 2024, 2025):
+            path = root / "data" / "dadjokes" / str(year) / "01.parquet"
+            path.parent.mkdir(parents=True)
+            times = pd.date_range(f"{year}-01-01", periods=len(rows), freq="h")
+            rows.assign(id=str(year) + rows.id, created_at=times, created_utc=times.as_unit("s").asi8).to_parquet(path)
+        with patch("pipeline.data.snapshot_download", return_value=root) as download:
+            original = load_pinned("o/d", "abc", body_chars=None)
+            (root / "data/dadjokes/2025/01.parquet").write_bytes(b"invalid cached test shard")
+            limited = load_pinned("o/d", "abc", body_chars=None, validation_only=True)
+        kwargs = download.call_args.kwargs
+        self.assertEqual(kwargs["revision"], "abc")
+        self.assertIn("data/dadjokes/2024/*.parquet", kwargs["allow_patterns"])
+        self.assertNotIn("data/dadjokes/2025/*.parquet", kwargs["allow_patterns"])
+        self.assertTrue(limited.test.empty)
+        pd.testing.assert_frame_equal(limited.train, original.train)
+        pd.testing.assert_frame_equal(limited.val, original.val)
 
     def test_wrong_column_type(self):
         root = self.write(f"SELECT * REPLACE (score::VARCHAR AS score) FROM ({ROWS_SQL})")

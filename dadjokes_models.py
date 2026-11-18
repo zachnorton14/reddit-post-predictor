@@ -58,18 +58,23 @@ class Config:
 
 # ---------------------------------------------------------------- data
 
-def load(cfg, source=None):
+def load(cfg, source=None, *, validation_only=False):
     """All labeled text posts of one subreddit, split by time. Cached as Parquet per subreddit.
 
-    With `source` (a Parquet glob, e.g. a pinned Hugging Face download), read it and skip the cache.
+    With `source` (a Parquet glob or a list of shards), read it and skip the cache.
+    A validation-only load uses pre-test shards and returns an empty test frame.
     """
     def labeled(src):
         bcfg = tb.Config(source=src, train_end=cfg.train_end, val_end=cfg.val_end, max_train_per_sub=10**9,
                          max_eval_per_sub=10**9, body_chars=cfg.body_chars)
-        d = tb.load_data(bcfg)
+        d = tb.load_data(bcfg, validation_only=validation_only)
+        d.con.close()
         return pd.concat([d.train.assign(split="train"), d.val.assign(split="val"), d.test.assign(split="test")])
 
-    if source:
+    if validation_only and source is None:
+        folder = Path("data/textonly/data") / cfg.subreddit
+        source = sorted(str(p) for p in folder.glob("*/*.parquet") if p.parent.name < cfg.val_end[:4])
+    if source is not None:
         df = labeled(source)
     else:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
