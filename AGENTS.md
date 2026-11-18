@@ -27,7 +27,7 @@ pip install -r requirements-ci.txt     # lint and tests only (what CI installs, 
 ```
 
 - Put `HF_TOKEN` in `.env`. It is ignored by git. Never commit a token, key or `.vcl_state.json`.
-- The dataset is `zachnorton03/textonly-subreddit-predictors` on Hugging Face. Local copies go in `data/` (ignored).
+- The dataset is `jbduran/textonly-subreddit-predictors` on Hugging Face. Local copies go in `data/` (ignored).
   `textonly_data.SOURCES` reads it from `"local"` or `"hf"`.
 
 ## Branches and pull requests
