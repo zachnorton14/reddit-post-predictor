@@ -53,7 +53,7 @@ class EvaluateTest(unittest.TestCase):
         with mock.patch.object(evaluate, "load_pinned", return_value=self.data) as load, \
                 mock.patch.dict(evaluate.LOADERS, loaders, clear=True):
             evaluate.main(["--model", str(self.model), "--dataset", "o/d", "--revision", "abc", "--out", str(self.out)])
-        load.assert_called_once_with("o/d", "abc", body_chars=1000)
+        load.assert_called_once_with("o/d", "abc", body_chars=1000, validation_only=False)
 
     def test_dispatches_on_type_and_writes_gated_metrics(self):
         fake = mock.Mock(side_effect=lambda d, m, data: data.test.metric_pct.to_numpy())
@@ -69,12 +69,13 @@ class EvaluateTest(unittest.TestCase):
         self.data.val = fake_test_split(120)
         fake = mock.Mock(side_effect=lambda d, m, data: data.test.metric_pct.to_numpy())
         (self.model / "model.json").write_text(json.dumps({"type": "fake"}))
-        with mock.patch.object(evaluate, "load_pinned", return_value=self.data), \
+        with mock.patch.object(evaluate, "load_pinned", return_value=self.data) as load, \
                 mock.patch.dict(evaluate.LOADERS, {"fake": fake}, clear=True):
             evaluate.main(["--model", str(self.model), "--dataset", "o/d", "--revision", "abc", "--out", str(self.out),
                            "--split", "val"])
         result = json.loads(self.out.read_text())
         self.assertEqual(result["n_val"], 120)
+        load.assert_called_once_with("o/d", "abc", body_chars=1000, validation_only=True)
         self.assertNotIn("n_test", result)
         self.assertEqual(len(self.data.test), 200)  # the caller's data is not changed
 
@@ -86,7 +87,7 @@ class EvaluateTest(unittest.TestCase):
         with mock.patch.object(evaluate, "load_pinned", return_value=self.data) as load, \
                 mock.patch.dict(evaluate.LOADERS, {"prototype": fake}, clear=True):
             evaluate.main(["--model", str(self.model), "--dataset", "o/d", "--revision", "abc", "--out", str(self.out)])
-        load.assert_called_once_with("o/d", "abc", body_chars=None)
+        load.assert_called_once_with("o/d", "abc", body_chars=None, validation_only=False)
         rows = json.loads(self.out.read_text())["rows"]
         self.assertEqual(rows, evaluate.rows_hash(self.data.test.iloc[::-1]))  # order doesn't matter
         self.assertNotEqual(rows, evaluate.rows_hash(self.data.test.iloc[1:]))
