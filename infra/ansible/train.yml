@@ -111,7 +111,7 @@
 
         - name: Evaluate the candidate
           ansible.builtin.command: >-
-            docker run --rm --gpus all -e HF_TOKEN -v {{ workdir }}/out:/out {{ image }}
+            docker run --rm --gpus all -e HF_TOKEN -e EVAL_CACHE=/out/eval_cache -v {{ workdir }}/out:/out {{ image }}
             python -m pipeline.evaluate --model /out/model --dataset {{ dataset }} --revision {{ revision }}
             --out /out/metrics.json
           environment:
@@ -128,7 +128,7 @@
 
         - name: Evaluate the champion on the same test data
           ansible.builtin.command: >-
-            docker run --rm --gpus all -e HF_TOKEN -v {{ workdir }}/out:/out -v {{ workdir }}/champion:/champion:ro
+            docker run --rm --gpus all -e HF_TOKEN -e EVAL_CACHE=/out/eval_cache -v {{ workdir }}/out:/out -v {{ workdir }}/champion:/champion:ro
             {{ image }} python -m pipeline.evaluate --model /champion --dataset {{ dataset }} --revision {{ revision }}
             --out /out/champion_metrics.json
           environment:

@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 env:
-  DATASET: zachnorton03/textonly-subreddit-predictors
+  DATASET: jbduran/textonly-subreddit-predictors
 
 jobs:
   train-eval:

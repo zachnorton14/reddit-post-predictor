@@ -26,7 +26,7 @@ from huggingface_hub import HfApi, hf_hub_download
 from reddit_data import DELETED_SQL, NSFW_SQL
 
 SOURCE_REPO = "open-index/arctic"
-TARGET_REPO = "zachnorton03/textonly-subreddit-predictors"
+TARGET_REPO = "jbduran/textonly-subreddit-predictors"
 SUBREDDITS = [
     "AskReddit", "Showerthoughts", "unpopularopinion", "dadjokes",
     "hypotheticalsituation", "sysadmin", "TwoSentenceHorror",

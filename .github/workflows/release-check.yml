@@ -25,7 +25,7 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}/train
-  DATASET: zachnorton03/textonly-subreddit-predictors
+  DATASET: jbduran/textonly-subreddit-predictors
   HEAD_SHA: ${{ github.event.pull_request.head.sha }}
 
 jobs:

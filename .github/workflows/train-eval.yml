@@ -31,7 +31,7 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}/train
-  DATASET: zachnorton03/textonly-subreddit-predictors
+  DATASET: jbduran/textonly-subreddit-predictors
 
 jobs:
   image:

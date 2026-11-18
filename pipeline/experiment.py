@@ -12,17 +12,20 @@ Config (experiments/<name>.yaml):
       - {model: deberta_large_attn4, seeds: [42]}
     epochs: 3                       # optional, passed to every run
     allow_fallback: false           # optional; true lets the workflow use the RTX 2080 Ti when no L40S is free
+    type: prototype                 # optional; the pipeline/evaluate.py loader for the saved runs (default prototype)
 
 Runner contract, called once per run from the repo root:
 
     python <runner> --models <model> --seeds <seed> --output <dir>/runs --results <dir>/results --resume \\
         --dataset <hf repo> --revision <sha> [--epochs N]
 
-It must write <dir>/runs/<model>_s<seed>/best.json with `ap`, `precision_top10` and `spearman` on 2024 validation,
-and must never load or score test. Each finished run is uploaded straight away to
-experiments/<config name>/<short commit>/<model>_s<seed>/ in the models repo (all but resume.pt and
-best_checkpoint.pt, which duplicate the weights), so a
-reservation that runs out loses only the run in progress. Runs already uploaded for this commit are skipped.
+It must write <dir>/runs/<model>_s<seed>/best.json, save the weights so the config's `type` loader can read them, and
+never load or score test. Each finished run is then scored on 2024 validation of every subreddit by pipeline.evaluate
+(val_eval.json), like the champion, so the table compares like with like whatever the runner trained on.
+
+Each finished run is uploaded straight away to experiments/<config name>/<short commit>/<model>_s<seed>/ in the
+models repo (all but resume.pt and best_checkpoint.pt, which duplicate the weights), so a reservation that runs out
+loses only the run in progress. Runs already uploaded for this commit are skipped.
 
 The deployed champion is scored on validation too (pipeline.evaluate --split val). The summary
 (<dir>/summary.json, <dir>/summary.md) compares each run with it. That comparison is advisory: the blocking gate
@@ -45,7 +48,7 @@ MODEL_REPO = "zachnorton03/reddit-post-predictor-models"
 NAME = re.compile(r"^[a-z0-9_]+$")
 RUNNER = re.compile(r"^[a-z0-9_]+\.py$")
 MAX_RUNS = 50
-KEYS = {"runner", "runs", "epochs", "allow_fallback"}
+KEYS = {"runner", "runs", "epochs", "allow_fallback", "type"}
 
 
 class ConfigError(ValueError):
@@ -84,10 +87,12 @@ def load_config(path) -> dict:
         raise ConfigError(f"{path}: `epochs` must be a positive whole number")
     if type(cfg.get("allow_fallback", False)) is not bool:
         raise ConfigError(f"{path}: `allow_fallback` must be true or false")
+    if not isinstance(cfg.get("type", "prototype"), str) or not NAME.match(cfg.get("type", "prototype")):
+        raise ConfigError(f"{path}: `type` must name a loader in pipeline/evaluate.py, like prototype")
     if len(plan(cfg)) > MAX_RUNS:
         raise ConfigError(f"{path}: more than {MAX_RUNS} runs; split it into several configs")
     return {"name": path.stem, "runner": runner, "runs": runs, "epochs": epochs,
-            "allow_fallback": cfg.get("allow_fallback", False)}
+            "allow_fallback": cfg.get("allow_fallback", False), "type": cfg.get("type", "prototype")}
 
 
 def plan(cfg) -> list[tuple[str, int]]:
@@ -117,28 +122,33 @@ def runner_command(cfg, model, seed, out, dataset, revision) -> list[str]:
 
 
 def summarize(cfg, commit, rows, champion) -> str:
-    """Markdown table of the runs (and per-model means) next to the champion's validation scores."""
-    lines = [f"### Experiment `{cfg['name']}` at `{commit[:7]}` (2024 validation)", "",
+    """Markdown tables of the runs (and per-model means) next to the champion, all scored by pipeline.evaluate."""
+    fmt = lambda v, f=".4f": format(v, f) if isinstance(v, (int, float)) else "–"  # noqa: E731
+    lines = [f"### Experiment `{cfg['name']}` at `{commit[:7]}` (2024 validation, macro average over subreddits)", "",
              "| Run | Status | Val AP | Top-10% hit | Spearman | Minutes |", "|---|---|---:|---:|---:|---:|"]
-    fmt = lambda v, f: format(v, f) if isinstance(v, (int, float)) else "–"  # noqa: E731
-    if champion:
-        lines.append(f"| **champion** {champion['name']} | deployed | {fmt(champion['pr_auc'], '.4f')} | "
-                     f"{fmt(champion['top10_hit_rate'], '.4f')} | {fmt(champion['spearman'], '.4f')} | |")
-    for r in rows:
-        minutes = r["seconds"] / 60 if isinstance(r.get("seconds"), (int, float)) else None
-        lines.append(f"| {r['run']} | {r['status']} | {fmt(r.get('ap'), '.4f')} | {fmt(r.get('precision_top10'), '.4f')}"
-                     f" | {fmt(r.get('spearman'), '.4f')} | {fmt(minutes, '.0f')} |")
+    scored = ([{"run": f"**champion** {champion['name']}", "status": "deployed", "eval": champion}] if champion else []) \
+        + rows
+    for r in scored:
+        e, sec = r.get("eval") or {}, r.get("seconds")
+        lines.append(f"| {r['run']} | {r['status']} | {fmt(e.get('pr_auc'))} | {fmt(e.get('top10_hit_rate'))} | "
+                     f"{fmt(e.get('spearman'))} | {fmt(sec / 60 if isinstance(sec, (int, float)) else None, '.0f')} |")
     done = {}
     for r in rows:
-        if isinstance(r.get("ap"), (int, float)):
-            done.setdefault(r["model"], []).append(r)
-    means = [(m, rs) for m, rs in done.items() if len(rs) > 1]
+        if (r.get("eval") or {}).get("pr_auc") is not None:
+            done.setdefault(r["model"], []).append(r["eval"])
+    means = [(m, es) for m, es in done.items() if len(es) > 1]
     if means:
-        lines += ["", "| Model (mean over seeds) | Seeds | Val AP | Top-10% hit |", "|---|---:|---:|---:|"]
-        for model, rs in means:
-            ap = sum(r["ap"] for r in rs) / len(rs)
-            top = sum(r["precision_top10"] for r in rs) / len(rs)
-            lines.append(f"| {model} | {len(rs)} | {ap:.4f} | {top:.4f} |")
+        lines += ["", "| Model (mean over seeds) | Seeds | Val AP | Top-10% hit | Spearman |", "|---|---:|---:|---:|---:|"]
+        for model, es in means:
+            lines.append(f"| {model} | {len(es)} | " + " | ".join(fmt(sum(e[m] for e in es) / len(es)) for m in
+                                                                  ("pr_auc", "top10_hit_rate", "spearman")) + " |")
+    subs = sorted({sub for r in scored for sub in (r.get("eval") or {}).get("by_subreddit", {})})
+    if subs:
+        lines += ["", "Val AP per subreddit:", "", "| Run | " + " | ".join(subs) + " |", "|---|" + "---:|" * len(subs)]
+        for r in scored:
+            by = (r.get("eval") or {}).get("by_subreddit")
+            if by:
+                lines.append(f"| {r['run']} | " + " | ".join(fmt(by.get(sub, {}).get("pr_auc")) for sub in subs) + " |")
     if champion:
         lines += ["", "Advisory only: experiments are chosen on validation. The gate that blocks `release` scores the "
                   "chosen model on test against the champion."]
@@ -146,6 +156,20 @@ def summarize(cfg, commit, rows, champion) -> str:
         lines += ["", "No champion is deployed yet, so there is nothing to compare with."]
     lines += ["", f"Files: `{MODEL_REPO}` → `{hf_prefix(cfg, commit)}/`"]
     return "\n".join(lines) + "\n"
+
+
+def evaluate_val(model_dir, dataset, revision, result, meta=None) -> dict:
+    """pipeline.evaluate --split val on model_dir. `meta` is written as model.json in a linked copy, for runs that
+    have none (the run folder itself is left as the runner wrote it)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        if meta:
+            for f in Path(model_dir).iterdir():
+                (Path(tmp) / f.name).symlink_to(f.resolve())
+            (Path(tmp) / "model.json").write_text(json.dumps(meta))
+            model_dir = tmp
+        subprocess.run([sys.executable, "-m", "pipeline.evaluate", "--model", str(model_dir), "--split", "val",
+                        "--dataset", dataset, "--revision", revision, "--out", str(result)], check=True, cwd=ROOT)
+    return json.loads(Path(result).read_text())
 
 
 def score_champion(dataset, revision, out) -> dict | None:
@@ -157,10 +181,8 @@ def score_champion(dataset, revision, out) -> dict | None:
         champ = hf_models.fetch_champion(Path(tmp))
         if not champ:
             return None
-        result = out / "champion_val.json"
-        subprocess.run([sys.executable, "-m", "pipeline.evaluate", "--model", tmp, "--split", "val",
-                        "--dataset", dataset, "--revision", revision, "--out", str(result)], check=True, cwd=ROOT)
-    return {"name": champ["name"], "version": champ["version"], **json.loads(result.read_text())}
+        result = evaluate_val(tmp, dataset, revision, out / "champion_val.json")
+    return {"name": champ["name"], "version": champ["version"], **result}
 
 
 def main(argv=None) -> int:
@@ -198,6 +220,8 @@ def main(argv=None) -> int:
         remote = f"{prefix}/{run}"
         if api.file_exists(MODEL_REPO, f"{remote}/best.json"):
             row.update(json.loads(Path(hf_hub_download(MODEL_REPO, f"{remote}/best.json")).read_text()))
+            if api.file_exists(MODEL_REPO, f"{remote}/val_eval.json"):
+                row["eval"] = json.loads(Path(hf_hub_download(MODEL_REPO, f"{remote}/val_eval.json")).read_text())
             rows.append({**row, "status": "already done"})
             print(f"{run}: already on Hugging Face, skipping", flush=True)
             continue
@@ -212,6 +236,11 @@ def main(argv=None) -> int:
         (args.out / "runs" / run / "experiment.json").write_text(json.dumps(
             {"config": cfg["name"], "commit": args.commit, "dataset": args.dataset, "revision": args.revision,
              "runner": cfg["runner"], "model": model, "seed": seed, "epochs": cfg["epochs"]}, indent=2))
+        try:
+            row["eval"] = evaluate_val(args.out / "runs" / run, args.dataset, args.revision,
+                                       args.out / "runs" / run / "val_eval.json", {"name": run, "type": cfg["type"]})
+        except Exception as e:  # keep the trained run; the table shows it unscored
+            print(f"::warning::{run}: validation scoring failed: {e}", file=sys.stderr)
         api.upload_folder(repo_id=MODEL_REPO, folder_path=args.out / "runs" / run, path_in_repo=remote,
                           ignore_patterns=["resume.pt", "best_checkpoint.pt"], commit_message=f"Experiment {remote}")
         rows.append({**row, "status": "done"})
