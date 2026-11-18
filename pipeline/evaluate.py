@@ -42,10 +42,17 @@ def predict_prototype(model_dir, meta, data):
     return pm.predict_checkpoint(model_dir, data.test)
 
 
+def predict_d1(model_dir, meta, data):
+    """A run saved by d1_models.train: weights.safetensors, spec.json, best.json (its ranking score)."""
+    import d1_models
+
+    return d1_models.predict(model_dir, data.test)
+
+
 # model.json type -> loader(model_dir, meta, data) returning test predictions. Keep the deployed champion's type.
-LOADERS = {"minilm": predict_minilm, "prototype": predict_prototype}
-# Body characters each type reads (default 1000). Prototype runs read the full body and cut it themselves (spec.json).
-BODY_CHARS = {"prototype": None}
+LOADERS = {"minilm": predict_minilm, "prototype": predict_prototype, "d1": predict_d1}
+# Body characters each type reads (default 1000). These read the full body and cut it themselves.
+BODY_CHARS = {"prototype": None, "d1": None}
 
 
 def parse_args(argv=None):
@@ -74,13 +81,13 @@ def scores(frame, p):
             "n": len(frame)}
 
 
-def metrics(frame, p, split="test"):
+def metrics(frame, p, split="test", min_posts=MIN_POSTS):
     p = np.asarray(p)
     by_sub = {sub: scores(frame[mask], p[mask])
               for sub in sorted(frame.subreddit.unique()) if (mask := (frame.subreddit == sub).to_numpy()).any()}
-    counted = [sub for sub, s in by_sub.items() if s["n"] >= MIN_POSTS]
+    counted = [sub for sub, s in by_sub.items() if s["n"] >= min_posts]
     if not counted:
-        raise SystemExit(f"no subreddit has {MIN_POSTS} or more {split} posts")
+        raise SystemExit(f"no subreddit has {min_posts} or more {split} posts")
     # compare_metrics.py gates on the macro pr_auc and top10_hit_rate and checks that `rows` match
     result = {m: float(np.mean([by_sub[sub][m] for sub in counted])) for m in METRICS}
     result |= {f"n_{split}": len(frame), "macro_subreddits": counted, "by_subreddit": by_sub}
