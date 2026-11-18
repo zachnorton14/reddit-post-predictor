@@ -31,6 +31,36 @@ What it means:
   `pipeline/evaluate.py` before the gate can score it on test.
 - PR #25 was merged before this run ended, so the workflow put the table in the run summary, not on a PR.
 
+## 2026-11-17 — averaging the saved DeBERTa checkpoints
+
+On r/dadjokes, an equal-weight average of DeBERTa-large attention seeds 42/43/44
+and DeBERTa-base seed 42 reached **0.2803 validation AP**. The previous
+MiniLM/HGB + DeBERTa blend reached 0.2681 on the same 29,760 posts. Each component
+trained on 2019–2023 posts. The averaging uses the original log-engagement scores,
+with fixed weights and no additional fitting.
+
+| Model | 2024 AP | Jan–Jun AP | Jul–Dec AP | 2024 top-10% precision | 2024 Spearman |
+|---|---:|---:|---:|---:|---:|
+| Prior MiniLM/HGB + DeBERTa | 0.2681 | — | 0.2820 | 31.96% | 0.4144 |
+| Best individual large seed (43) | 0.2773 | 0.2620 | 0.2950 | 31.52% | 0.4251 |
+| Three large seeds | 0.2790 | 0.2642 | 0.2960 | 32.33% | 0.4324 |
+| Three large seeds + base | **0.2803** | **0.2659** | **0.2965** | **32.33%** | **0.4341** |
+
+Adding base costs a fourth forward pass for 0.0012 AP over the three-seed average.
+Both variants found 962 actual top-decile posts among their 2,976 highest-ranked
+validation posts. The source checkpoints were selected on 2024 validation, so both
+half-year comparisons are exploratory. Historical test and release evaluation remain pending.
+
+Run `python -m scripts.deberta_ensemble` to rebuild
+`results/deberta_ensemble/validation.csv` from pinned HF revisions. The evaluation joins
+each prediction to its Reddit post ID and verifies timestamps before averaging. With
+read access to the project's HF models repo, score a Parquet file of derived posting-time
+features with `python predict_prototypes.py features.parquet scores.parquet --model large3_base`.
+Use `--model large3` for the three-checkpoint version. The scorer uses the Transformers 5
+runtime in `requirements.txt` and loads one encoder at a time. Reloading the four weights
+on a laptop GPU reproduced the ranking of eight seed-42 sampled validation posts, with a
+maximum absolute difference of 0.0095 in predicted log engagement (rounded up).
+
 ## Update 2026-11-17: a context-free "good post" score
 
 Question: can the model say whether a post is good, whatever its luck? Code: `prototype_models.CONTEXT`,
