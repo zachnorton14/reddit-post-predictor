@@ -97,13 +97,18 @@ These rules keep the results honest. Break them and the numbers mean nothing.
 - **Metrics:** `pr_auc` is average precision on that label. Some notes call it "AP" or "test AP".
   `top10_hit_rate` is the share of real top-10% posts among the 10% the model ranks highest (notes call it
   "top-10% success" or "precision top-10"). Also report `spearman` when you can.
+- **Evaluate on every subreddit.** `pipeline/evaluate.py` scores validation or test posts of every subreddit in the
+  dataset (up to 40,000 each). The headline `pr_auc`, `top10_hit_rate` and `spearman` are macro averages (each
+  subreddit with 1,000+ posts counts once), and the gate uses them. Report the per-subreddit numbers too
+  (`by_subreddit`). A dadjokes-only number is not comparable with these.
 - **Use only what is known at posting time.** These fields leak the outcome: edits (cut bodies at EDIT markers),
   removal or moderator flairs, link flair (moderators change it later) and megathreads. Never add a feature computed
   from posts after the target post.
 - **Compare like with like.** Before you call a model better, check that it used the same subreddit, splits,
   training years and test set. Say how many random seeds it used. A gain of about 0.01 can be seed noise.
-- **Pin the data.** Pipeline code loads data only through `pipeline/data.py: load_pinned(dataset, revision)`, never
-  from a local cache.
+- **Pin the data.** Pipeline code loads data only through `pipeline/data.py` (`load_pinned` for training,
+  `load_eval` for scoring) from a pinned dataset revision. `load_eval` caches its result under a key of the revision
+  and the labeling code, so a cache can never serve other data.
 
 ## GPUs and compute
 

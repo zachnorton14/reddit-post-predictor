@@ -89,14 +89,15 @@ Files marked *(exists)* are in the repo; the rest do not exist yet. Each owner c
 | `infra/ansible/train.yml` *(exists)* | needs passwordless sudo for the VCL user; on the `vcl` inventory group: installs Docker and the NVIDIA container toolkit if needed; logs in to GHCR with `$GHCR_USER`/`$GHCR_TOKEN` (`lookup('env', ...)`); runs `pipeline.train`, then `pipeline.evaluate` on the candidate and (if `champion_dir` is set) on the champion, in `{{ image }}` with `$HF_TOKEN`; copies `model/`, `metrics.json` and `champion_metrics.json` to `{{ artifacts_dir }}` on the controller. Extra vars: `image`, `dataset`, `revision`, `artifacts_dir`, optional `champion_dir`. |
 | `docker/train.Dockerfile` | CUDA training environment with the repo code |
 | `pipeline/train.py` | `--dataset <repo> --revision <sha> --out <dir>`; writes the model to `<dir>` with `<dir>/model.json`: `name` (the hand-set `MODEL_NAME`, format in the model-release skill), `type`, and anything the loader needs |
-| `pipeline/evaluate.py` | `--model <dir> --dataset <repo> --revision <sha> --out <file>`; loads any past model by its `model.json` `type` (`minilm`, `prototype`); writes JSON with at least `pr_auc` and `top10_hit_rate` on that revision's test split, and `rows` (hash of the scored post ids) |
+| `pipeline/evaluate.py` | `--model <dir> --dataset <repo> --revision <sha> --out <file>`; loads any past model by its `model.json` `type` (`minilm`, `prototype`); scores every subreddit's test split (`--split val` for validation, up to 40,000 posts each) and writes JSON with the macro averages `pr_auc`, `top10_hit_rate` and `spearman` (each subreddit with 1,000+ posts counts once), `by_subreddit`, and `rows` (hash of the scored post ids). Set `EVAL_CACHE` to share the labeled splits between containers |
 | `candidate.yaml` *(exists)* | `path` (HF folder with the weights), `name`, `type`. Checked by `scripts/hf_models.py candidate` |
 | `infra/ansible/gate.yml` *(exists)* | on the instance: downloads the candidate (`hf_models.py fetch`) and the champion, runs `pipeline.evaluate` on both, copies `metrics.json` and `champion_metrics.json` to `{{ results_dir }}`. Extra vars: `image`, `dataset`, `revision`, `candidate_path`, `candidate_revision`, `candidate_name`, `candidate_type`, `results_dir` |
 | `docker/serve.Dockerfile` | inference image; `COPY model/` from the build context (the scored weights, with `model.json`) |
 | `infra/deploy/deploy.sh <image>` | deploys the image to production |
 
 The gate (`scripts/compare_metrics.py`) compares the candidate with the champion, both scored in the same run
-by the same `evaluate.py` on the same test data. It fails if the two `rows` hashes differ (different posts). It fails if `pr_auc` or `top10_hit_rate` drops more than 0.01.
+by the same `evaluate.py` on the same test data. It fails if the two `rows` hashes differ (different posts). It fails if the macro `pr_auc` or `top10_hit_rate` drops more than 0.01. It warns (does not fail) when one
+subreddit's `pr_auc` drops more than 0.03.
 With no champion yet, it passes. The gate checks "not worse", not "better": 0.01 is near the noise on the test
 split.
 
@@ -132,8 +133,9 @@ model ships, by the blocking gate.
    `experiments/<name>/<short commit>/<model>_s<seed>/`, weights included (not `resume.pt` or
    `best_checkpoint.pt`). A run that doesn't finish before the reservation ends is lost; a re-run on the same commit
    skips runs already on HF.
-3. The workflow also scores the deployed champion on validation (`pipeline.evaluate --split val`). It posts a table
-   of every run next to the champion on the branch's open PR (or in the run summary if there's no PR).
+3. Each finished run and the deployed champion are scored by the same `pipeline.evaluate --split val` on every
+   subreddit (`val_eval.json` in the run's folder). The workflow posts a table of the macro averages and the AP per
+   subreddit, every run next to the champion, on the branch's open PR (or in the run summary if there's no PR).
 4. Write up the result in `PROJECT_NOTES.md` in the PR, by hand.
 
 ```yaml
@@ -143,12 +145,13 @@ runs:
   - {model: deberta_large_attn4, seeds: [42]}
 epochs: 3                       # optional
 allow_fallback: false           # optional; true allows the RTX 2080 Ti when no L40S is free (base-size models)
+type: prototype                 # optional; the pipeline/evaluate.py loader that reads the saved runs
 ```
 
 **Runner contract.** Called once per run, from the repo root, in the training image:
 `python <runner> --models <model> --seeds <seed> --output <dir>/runs --results <dir>/results --resume --dataset
 <repo> --revision <sha> [--epochs N]`. It must load data only from the pinned revision, never load or score test,
-and write `<dir>/runs/<model>_s<seed>/best.json` with `ap`, `precision_top10` and `spearman`.
+write `<dir>/runs/<model>_s<seed>/best.json`, and save the weights so the config's `type` loader can score them.
 
 **Timing.** Measure a new model with one seed before listing many. A config that doesn't fit in about 9 hours
 needs splitting. The self-hosted controller runs one job at a time, so a long experiment delays other GPU jobs
