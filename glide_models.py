@@ -92,7 +92,15 @@ def load_base(dev):
         import triton
 
         triton.runtime.driver.active.get_current_target()
+        import fla.ops.gated_delta_rule  # noqa: F401  (raises the real error if the kernels can't load)
     model = Glide.from_pretrained(path, device=dev, dtype=torch.bfloat16, vision=False)
+    if dev == "cuda":
+        import inspect
+
+        import transformers.models.qwen3_5.modeling_qwen3_5 as QM
+
+        if not inspect.getclosurevars(QM.torch_chunk_gated_delta_rule).nonlocals.get("is_new_implementation"):
+            raise RuntimeError("transformers chose the slow PyTorch gated-delta-rule path: check the fla-core install")
     return model, options_for
 
 

@@ -16,4 +16,5 @@ protobuf>=4
 pillow
 soundfile
 torchvision
-flash-linear-attention==0.5.2; sys_platform == "linux"  # fast linear-attention kernels for GLiDE (Qwen3.5)
+fla-core==0.5.2; sys_platform == "linux"  # GLiDE (Qwen3.5) linear-attention kernels; the full flash-linear-attention
+# package also loads fla.models, which breaks `import fla` under transformers 5.20 and silently selects the slow path
