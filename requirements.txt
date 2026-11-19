@@ -10,7 +10,7 @@ scikit-learn>=1.5
 scipy
 sentence-transformers>=6.2
 torch>=2.14
-transformers>=5.20
+transformers==5.20.2  # GLiDE (Qwen3.5) runs on this version; later ones renamed classes its package uses
 sentencepiece>=0.2  # DeBERTa-v3 tokenizer
 protobuf>=4
 pillow
