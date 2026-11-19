@@ -58,7 +58,7 @@ class EvaluateTest(unittest.TestCase):
         with mock.patch.object(evaluate, "load_eval", return_value=self.data) as load, \
                 mock.patch.dict(evaluate.LOADERS, loaders, clear=True):
             evaluate.main(["--model", str(self.model), "--dataset", "o/d", "--revision", "abc", "--out", str(self.out)])
-        load.assert_called_once_with("o/d", "abc", body_chars=1000, validation_only=False)
+        load.assert_called_once_with("o/d", "abc", body_chars=1000, per_sub=pdata.EVAL_PER_SUB, validation_only=False)
 
     def test_dispatches_on_type_and_writes_gated_metrics(self):
         fake = mock.Mock(side_effect=lambda d, m, data: data.test.metric_pct.to_numpy())
@@ -82,7 +82,7 @@ class EvaluateTest(unittest.TestCase):
                            "--split", "val"])
         result = json.loads(self.out.read_text())
         self.assertEqual(result["n_val"], 2000)
-        load.assert_called_once_with("o/d", "abc", body_chars=1000, validation_only=True)
+        load.assert_called_once_with("o/d", "abc", body_chars=1000, per_sub=pdata.EVAL_PER_SUB, validation_only=True)
         self.assertNotIn("n_test", result)
         self.assertEqual(len(self.data.test), 2400)  # the caller's data is not changed
 
@@ -94,7 +94,7 @@ class EvaluateTest(unittest.TestCase):
         with mock.patch.object(evaluate, "load_eval", return_value=self.data) as load, \
                 mock.patch.dict(evaluate.LOADERS, {"prototype": fake}, clear=True):
             evaluate.main(["--model", str(self.model), "--dataset", "o/d", "--revision", "abc", "--out", str(self.out)])
-        load.assert_called_once_with("o/d", "abc", body_chars=None, validation_only=False)
+        load.assert_called_once_with("o/d", "abc", body_chars=None, per_sub=pdata.EVAL_PER_SUB, validation_only=False)
         rows = json.loads(self.out.read_text())["rows"]
         self.assertEqual(rows, evaluate.rows_hash(self.data.test.iloc[::-1]))  # order doesn't matter
         self.assertNotEqual(rows, evaluate.rows_hash(self.data.test.iloc[1:]))

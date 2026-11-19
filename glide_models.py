@@ -48,7 +48,7 @@ class Spec:
     max_len: int = 768           # tokens per prompt; longer states are cut (bodies first)
     state_chars: int = 2000      # characters of state text kept
     train_per_sub: int = 5_000
-    val_per_sub: int = 3_000
+    val_per_sub: int = 1_000     # picks the ranking score; the experiment's eval_per_sub sample is the reported one
     seed: int = 42
 
 

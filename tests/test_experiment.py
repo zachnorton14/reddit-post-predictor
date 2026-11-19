@@ -47,6 +47,7 @@ def test_defaults_and_repeats(tmp_path):
     ("runner: run_pooling.py\nruns: [{model: m, seeds: [1]}]\nallow_fallback: yes please\n", "allow_fallback"),
     ("runner: run_pooling.py\nruns: [{model: m, seeds: [1]}]\ngpu: h100\n", "unknown keys"),
     ("runner: run_pooling.py\nruns: [{model: m, seeds: [1]}]\ntype: ../x\n", "type"),
+    ("runner: run_pooling.py\nruns: [{model: m, seeds: [1]}]\neval_per_sub: 0\n", "eval_per_sub"),
     ("runner: run_pooling.py\nruns: [{model: m, seeds: [1]}\n", "YAML"),
     ("- just a list\n", "mapping"),
 ])
@@ -143,7 +144,7 @@ def test_main_runs_uploads_and_skips(tmp_path, monkeypatch):
     monkeypatch.setattr(ex, "score_champion", lambda *a: None)
     scored = []
 
-    def fake_eval(model_dir, dataset, revision, result, meta=None):
+    def fake_eval(model_dir, dataset, revision, result, meta=None, per_sub=None):
         scored.append((Path(model_dir).name, meta))
         Path(result).write_text("{}")
         return ev(0.31, 0.34, 0.42)

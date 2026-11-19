@@ -89,7 +89,7 @@ Files marked *(exists)* are in the repo; the rest do not exist yet. Each owner c
 | `infra/ansible/train.yml` *(exists)* | needs passwordless sudo for the VCL user; on the `vcl` inventory group: installs Docker and the NVIDIA container toolkit if needed; logs in to GHCR with `$GHCR_USER`/`$GHCR_TOKEN` (`lookup('env', ...)`); runs `pipeline.train`, then `pipeline.evaluate` on the candidate and (if `champion_dir` is set) on the champion, in `{{ image }}` with `$HF_TOKEN`; copies `model/`, `metrics.json` and `champion_metrics.json` to `{{ artifacts_dir }}` on the controller. Extra vars: `image`, `dataset`, `revision`, `artifacts_dir`, optional `champion_dir`. |
 | `docker/train.Dockerfile` | CUDA training environment with the repo code |
 | `pipeline/train.py` | `--dataset <repo> --revision <sha> --out <dir>`; writes the model to `<dir>` with `<dir>/model.json`: `name` (the hand-set `MODEL_NAME`, format in the model-release skill), `type`, and anything the loader needs |
-| `pipeline/evaluate.py` | `--model <dir> --dataset <repo> --revision <sha> --out <file>`; loads any past model by its `model.json` `type` (`minilm`, `prototype`); scores every subreddit's test split (`--split val` for validation, up to 40,000 posts each) and writes JSON with the macro averages `pr_auc`, `top10_hit_rate` and `spearman` (each subreddit with 1,000+ posts counts once), `by_subreddit`, and `rows` (hash of the scored post ids). Set `EVAL_CACHE` to share the labeled splits between containers |
+| `pipeline/evaluate.py` | `--model <dir> --dataset <repo> --revision <sha> --out <file>`; loads any past model by its `model.json` `type` (`minilm`, `prototype`, `d1`, `glide`); scores every subreddit's test split (`--split val` for validation, up to 40,000 posts each; `--per-sub N` scores fewer) and writes JSON with the macro averages `pr_auc`, `top10_hit_rate` and `spearman` (each subreddit with 1,000+ posts counts once), `by_subreddit`, and `rows` (hash of the scored post ids). Set `EVAL_CACHE` to share the labeled splits between containers |
 | `candidate.yaml` *(exists)* | `path` (HF folder with the weights), `name`, `type`. Checked by `scripts/hf_models.py candidate` |
 | `infra/ansible/gate.yml` *(exists)* | on the instance: downloads the candidate (`hf_models.py fetch`) and the champion, runs `pipeline.evaluate` on both, copies `metrics.json` and `champion_metrics.json` to `{{ results_dir }}`. Extra vars: `image`, `dataset`, `revision`, `candidate_path`, `candidate_revision`, `candidate_name`, `candidate_type`, `results_dir` |
 | `docker/serve.Dockerfile` | inference image; `COPY model/` from the build context (the scored weights, with `model.json`) |
@@ -146,6 +146,7 @@ runs:
 epochs: 3                       # optional
 allow_fallback: false           # optional; true allows the RTX 2080 Ti when no L40S is free (base-size models)
 type: prototype                 # optional; the pipeline/evaluate.py loader that reads the saved runs
+eval_per_sub: 3000              # optional; validation posts scored per subreddit (default all, up to 40,000), for slow models
 ```
 
 **Runner contract.** Called once per run, from the repo root, in the training image:

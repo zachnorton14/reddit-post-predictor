@@ -48,7 +48,7 @@ MODEL_REPO = "zachnorton03/reddit-post-predictor-models"
 NAME = re.compile(r"^[a-z0-9_]+$")
 RUNNER = re.compile(r"^[a-z0-9_]+\.py$")
 MAX_RUNS = 50
-KEYS = {"runner", "runs", "epochs", "allow_fallback", "type"}
+KEYS = {"runner", "runs", "epochs", "allow_fallback", "type", "eval_per_sub"}
 
 
 class ConfigError(ValueError):
@@ -89,10 +89,14 @@ def load_config(path) -> dict:
         raise ConfigError(f"{path}: `allow_fallback` must be true or false")
     if not isinstance(cfg.get("type", "prototype"), str) or not NAME.match(cfg.get("type", "prototype")):
         raise ConfigError(f"{path}: `type` must name a loader in pipeline/evaluate.py, like prototype")
+    per_sub = cfg.get("eval_per_sub")
+    if per_sub is not None and (type(per_sub) is not int or per_sub < 1):
+        raise ConfigError(f"{path}: `eval_per_sub` must be a positive whole number")
     if len(plan(cfg)) > MAX_RUNS:
         raise ConfigError(f"{path}: more than {MAX_RUNS} runs; split it into several configs")
     return {"name": path.stem, "runner": runner, "runs": runs, "epochs": epochs,
-            "allow_fallback": cfg.get("allow_fallback", False), "type": cfg.get("type", "prototype")}
+            "allow_fallback": cfg.get("allow_fallback", False), "type": cfg.get("type", "prototype"),
+            "eval_per_sub": per_sub}
 
 
 def plan(cfg) -> list[tuple[str, int]]:
@@ -124,7 +128,8 @@ def runner_command(cfg, model, seed, out, dataset, revision) -> list[str]:
 def summarize(cfg, commit, rows, champion) -> str:
     """Markdown tables of the runs (and per-model means) next to the champion, all scored by pipeline.evaluate."""
     fmt = lambda v, f=".4f": format(v, f) if isinstance(v, (int, float)) else "–"  # noqa: E731
-    lines = [f"### Experiment `{cfg['name']}` at `{commit[:7]}` (2024 validation, macro average over subreddits)", "",
+    sample = f", up to {cfg['eval_per_sub']:,} posts per subreddit" if cfg.get("eval_per_sub") else ""
+    lines = [f"### Experiment `{cfg['name']}` at `{commit[:7]}` (2024 validation{sample}, macro average over subreddits)", "",
              "| Run | Status | Val AP | Top-10% hit | Spearman | Minutes |", "|---|---|---:|---:|---:|---:|"]
     scored = ([{"run": f"**champion** {champion['name']}", "status": "deployed", "eval": champion}] if champion else []) \
         + rows
@@ -158,7 +163,7 @@ def summarize(cfg, commit, rows, champion) -> str:
     return "\n".join(lines) + "\n"
 
 
-def evaluate_val(model_dir, dataset, revision, result, meta=None) -> dict:
+def evaluate_val(model_dir, dataset, revision, result, meta=None, per_sub=None) -> dict:
     """pipeline.evaluate --split val on model_dir. `meta` is written as model.json in a linked copy, for runs that
     have none (the run folder itself is left as the runner wrote it)."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -168,11 +173,12 @@ def evaluate_val(model_dir, dataset, revision, result, meta=None) -> dict:
             (Path(tmp) / "model.json").write_text(json.dumps(meta))
             model_dir = tmp
         subprocess.run([sys.executable, "-m", "pipeline.evaluate", "--model", str(model_dir), "--split", "val",
-                        "--dataset", dataset, "--revision", revision, "--out", str(result)], check=True, cwd=ROOT)
+                        "--dataset", dataset, "--revision", revision, "--out", str(result),
+                        *(["--per-sub", str(per_sub)] if per_sub else [])], check=True, cwd=ROOT)
     return json.loads(Path(result).read_text())
 
 
-def score_champion(dataset, revision, out) -> dict | None:
+def score_champion(dataset, revision, out, per_sub=None) -> dict | None:
     """The deployed model's validation scores, or None if nothing is deployed."""
     sys.path.insert(0, str(ROOT / "scripts"))
     import hf_models
@@ -181,7 +187,7 @@ def score_champion(dataset, revision, out) -> dict | None:
         champ = hf_models.fetch_champion(Path(tmp))
         if not champ:
             return None
-        result = evaluate_val(tmp, dataset, revision, out / "champion_val.json")
+        result = evaluate_val(tmp, dataset, revision, out / "champion_val.json", per_sub=per_sub)
     return {"name": champ["name"], "version": champ["version"], **result}
 
 
@@ -238,7 +244,8 @@ def main(argv=None) -> int:
              "runner": cfg["runner"], "model": model, "seed": seed, "epochs": cfg["epochs"]}, indent=2))
         try:
             row["eval"] = evaluate_val(args.out / "runs" / run, args.dataset, args.revision,
-                                       args.out / "runs" / run / "val_eval.json", {"name": run, "type": cfg["type"]})
+                                       args.out / "runs" / run / "val_eval.json", {"name": run, "type": cfg["type"]},
+                                       cfg["eval_per_sub"])
         except Exception as e:  # keep the trained run; the table shows it unscored
             print(f"::warning::{run}: validation scoring failed: {e}", file=sys.stderr)
         api.upload_folder(repo_id=MODEL_REPO, folder_path=args.out / "runs" / run, path_in_repo=remote,
@@ -247,7 +254,7 @@ def main(argv=None) -> int:
         print(f"{run}: done in {(time.monotonic() - start) / 60:.0f} min, uploaded to {remote}", flush=True)
 
     try:
-        champion = score_champion(args.dataset, args.revision, args.out)
+        champion = score_champion(args.dataset, args.revision, args.out, cfg["eval_per_sub"])
     except Exception as e:  # the runs are already stored; a champion problem shouldn't hide them
         print(f"::warning::could not score the champion on validation: {e}", file=sys.stderr)
         champion = None
