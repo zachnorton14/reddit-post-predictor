@@ -48,3 +48,44 @@ def main(model: str = "glide_score10", seed: int = 42, train_per_sub: int = 5000
          allow_slow: bool = False):
     train.remote(model, seed, train_per_sub, val_per_sub, epochs, clean_train, tag, allow_slow)
     print(f"done: modal volume get glide-runs runs/{model}_s{seed} data/glide/runs/")
+
+
+@app.function(image=image, gpu="H100", timeout=3 * 60 * 60, volumes={"/runs": runs, "/root/.cache/huggingface": hf_cache},
+              secrets=[modal.Secret.from_local_environ(["HF_TOKEN"])])
+def score(run: str) -> dict:
+    """A saved run on all of r/dadjokes 2024 validation (the set every dadjokes number uses) and on the
+    3,000-per-subreddit validation sample (per-subreddit breakdown). Writes /runs/<run>/val_scores.json."""
+    import json
+    import sys
+
+    import pandas as pd
+
+    os.environ["EVAL_CACHE"] = "/runs/eval_cache"
+    os.chdir(REPO)
+    sys.path.insert(0, REPO)
+    import glide_models
+    from pipeline.data import load_eval
+    from pipeline.evaluate import metrics
+
+    full = load_eval(DATASET, REVISION, body_chars=None, validation_only=True).val
+    sample = load_eval(DATASET, REVISION, body_chars=None, per_sub=3000, validation_only=True).val
+    dad = full[full.subreddit == "dadjokes"]
+    frame = pd.concat([dad, sample[~sample.id.isin(dad.id)]], ignore_index=True)
+    p = pd.Series(glide_models.predict(f"/runs/{run}", frame), index=frame.id.to_numpy())
+    out = {"dadjokes_full": metrics(dad, p[dad.id].to_numpy(), "val"),
+           "sample_3000": metrics(sample, p[sample.id].to_numpy(), "val")}
+    for v in out.values():
+        v.pop("rows", None)
+    Path(f"/runs/{run}/val_scores.json").write_text(json.dumps(out, indent=2))
+    runs.commit()
+    return out
+
+
+@app.local_entrypoint()
+def rescore(run: str = "runs/glide_score10_s42"):
+    import json
+
+    out = score.remote(run)
+    print(json.dumps({k: {m: v[m] for m in ("pr_auc", "top10_hit_rate", "spearman")} for k, v in out.items()}, indent=2))
+    for sub, m in out["sample_3000"]["by_subreddit"].items():
+        print(f"{sub:24s} {m['pr_auc']:.4f} {m['top10_hit_rate']:.4f} {m['spearman']:.4f}")
