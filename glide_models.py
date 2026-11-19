@@ -81,6 +81,10 @@ def load_base(dev):
     from glide import Glide
     from glide.prompt import options_for
 
+    if dev == "cuda":  # fail now, not hours in: without Triton the linear-attention layers fall back to slow paths
+        import triton
+
+        triton.runtime.driver.active.get_current_target()
     model = Glide.from_pretrained(path, device=dev, dtype=torch.bfloat16, vision=False)
     return model, options_for
 
@@ -167,16 +171,28 @@ class Readout:
 
 
 def encode_frame(frame, glide, options_for, spec):
-    """GLiDE prompt token ids for every post (the state text is cut to spec.state_chars, then to spec.max_len tokens)."""
-    texts = []
-    for r in frame.itertuples(index=False):
-        q = d1.question(r.subreddit, spec.readout)
-        texts.append(glide.prompter.text(d1.state_text(r)[:spec.state_chars], q, options_for(q)))
-    ids = glide.tokenizer(texts, add_special_tokens=False)["input_ids"]
-    too_long = sum(len(x) > spec.max_len for x in ids)
-    if too_long:  # state_chars keeps prompts short; this guards the token budget
-        raise ValueError(f"{too_long} prompts exceed {spec.max_len} tokens: lower state_chars")
-    return ids
+    """GLiDE prompt token ids for every post. The state text is cut to spec.state_chars, and further for the few posts
+    (emoji, non-Latin scripts) whose prompt still exceeds spec.max_len tokens."""
+    rows = list(frame.itertuples(index=False))
+    chars = [spec.state_chars] * len(rows)
+
+    def encode(idx):
+        texts = []
+        for i in idx:
+            q = d1.question(rows[i].subreddit, spec.readout)
+            texts.append(glide.prompter.text(d1.state_text(rows[i])[:chars[i]], q, options_for(q)))
+        return glide.tokenizer(texts, add_special_tokens=False)["input_ids"]
+
+    ids = encode(range(len(rows)))
+    for _ in range(8):
+        long = [i for i, x in enumerate(ids) if len(x) > spec.max_len]
+        if not long:
+            return ids
+        for i in long:  # shrink in proportion to the overflow, with a margin
+            chars[i] = int(chars[i] * spec.max_len / len(ids[i]) * 0.9)
+        for i, x in zip(long, encode(long)):
+            ids[i] = x
+    raise ValueError(f"{len(long)} prompts still exceed {spec.max_len} tokens")
 
 
 def micro_batches(indices, lengths, budget):

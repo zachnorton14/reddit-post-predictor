@@ -43,3 +43,18 @@ def test_lora_starts_as_identity_and_trains():
     assert len(params) == 4 and all(p.requires_grad for p in params)
     net(x).sum().backward()
     assert params[1].grad is not None and params[1].grad.abs().sum() > 0
+
+
+def test_long_prompts_are_shortened_to_fit():
+    """A fake tokenizer (one token per character) and prompter: only the over-long post is cut, and posts keep their order."""
+    from types import SimpleNamespace
+
+    frame = pd.DataFrame({"subreddit": ["a", "b", "c"], "title": ["x" * 50, "y" * 900, "z" * 10], "body": ["", "", ""],
+                          "local_dow": 0, "local_hour": 0, "local_month": 1, "log_posts_prev_hour": 0.0,
+                          "log_posts_prev_day": 0.0, "log_author_prev_posts": 0.0, "has_author_flair": 0, "is_repost": 0})
+    glide = SimpleNamespace(prompter=SimpleNamespace(text=lambda state, q, opts: state),
+                            tokenizer=lambda texts, add_special_tokens: {"input_ids": [list(t) for t in texts]})
+    spec = gm.Spec("noul", max_len=400, state_chars=2000)
+    ids = gm.encode_frame(frame, glide, lambda q: [], spec)
+    assert all(len(x) <= 400 for x in ids)
+    assert "x" * 50 in "".join(ids[0]) and "z" * 10 in "".join(ids[2]) and "y" in "".join(ids[1])
