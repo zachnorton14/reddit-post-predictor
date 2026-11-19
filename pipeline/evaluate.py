@@ -49,10 +49,17 @@ def predict_d1(model_dir, meta, data):
     return d1_models.predict(model_dir, data.test)
 
 
+def predict_glide(model_dir, meta, data):
+    """A run saved by glide_models.train: LoRA adapters and readout in weights.safetensors, spec.json, best.json."""
+    import glide_models
+
+    return glide_models.predict(model_dir, data.test)
+
+
 # model.json type -> loader(model_dir, meta, data) returning test predictions. Keep the deployed champion's type.
-LOADERS = {"minilm": predict_minilm, "prototype": predict_prototype, "d1": predict_d1}
+LOADERS = {"minilm": predict_minilm, "prototype": predict_prototype, "d1": predict_d1, "glide": predict_glide}
 # Body characters each type reads (default 1000). These read the full body and cut it themselves.
-BODY_CHARS = {"prototype": None, "d1": None}
+BODY_CHARS = {"prototype": None, "d1": None, "glide": None}
 
 
 def parse_args(argv=None):
