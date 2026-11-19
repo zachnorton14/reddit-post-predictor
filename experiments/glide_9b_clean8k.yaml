@@ -1,0 +1,10 @@
+# GLiDE-9B with 4x the training data of glide_9b: up to 8,000 posts per subreddit (before 2024), dropping likely
+# silent removals (score 0 but commented), ~70k posts. Same LoRA r16, score10 readout, 1 epoch, seed 42. Saves
+# resume.pt every 20 minutes and mirrors it to the HF models repo (checkpoints/glide/), so a re-run resumes
+# instead of restarting. Scored on the 3,000-per-subreddit validation sample, like glide_9b.
+runner: glide_models.py
+type: glide
+eval_per_sub: 3000
+runs:
+  - {model: glide_score10_clean8k, seeds: [42]}
+allow_fallback: false

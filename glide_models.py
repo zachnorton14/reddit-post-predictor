@@ -54,7 +54,11 @@ class Spec:
     clean_train: bool = False    # drop likely silent removals (score 0 but commented) from training; eval is unchanged
 
 
-MODELS = {"glide_noul": Spec("noul"), "glide_score10": Spec("score10")}
+MODELS = {"glide_noul": Spec("noul"), "glide_score10": Spec("score10"),
+          # 4x the posts of glide_score10 (~70k after cleaning), sized to train in about 6 hours on a VCL L40S
+          "glide_score10_clean8k": Spec("score10", train_per_sub=8_000, clean_train=True)}
+CHECKPOINT_MINUTES = 20
+CHECKPOINT_REPO = "zachnorton03/reddit-post-predictor-models"  # resume.pt mirror, so a new machine can resume
 RANKERS = {"noul": ("yes_margin",), "score10": ("expected_level", "top_level")}
 
 
@@ -238,6 +242,46 @@ def infer(net, ids, budget):
     return np.stack(out)
 
 
+def checkpoint_remote(spec, n_train):
+    """HF path of the run's resume.pt: one per spec and training-set size, so a changed run never resumes another."""
+    import hashlib
+
+    key = hashlib.sha1(json.dumps([asdict(spec), n_train], sort_keys=True).encode()).hexdigest()[:12]
+    return f"checkpoints/glide/{spec.readout}_s{spec.seed}_{key}/resume.pt"
+
+
+def fetch_checkpoint(local: Path, remote: str):
+    """Download resume.pt from the HF mirror when there's no local one. No token or no file: start fresh."""
+    if local.exists() or not os.environ.get("HF_TOKEN"):
+        return
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.errors import EntryNotFoundError
+
+    try:
+        local.write_bytes(Path(hf_hub_download(CHECKPOINT_REPO, remote, token=os.environ["HF_TOKEN"])).read_bytes())
+        print(f"resuming from {CHECKPOINT_REPO}/{remote}", flush=True)
+    except EntryNotFoundError:
+        pass
+
+
+def save_checkpoint(local: Path, remote: str, state: dict):
+    """Write resume.pt atomically, then mirror it to HF (best effort: a failed upload never stops training)."""
+    import torch
+
+    tmp = local.with_suffix(".tmp")
+    torch.save(state, tmp)
+    tmp.replace(local)
+    if os.environ.get("HF_TOKEN"):
+        try:
+            from huggingface_hub import HfApi
+
+            HfApi(token=os.environ["HF_TOKEN"]).upload_file(path_or_fileobj=str(local), path_in_repo=remote,
+                                                            repo_id=CHECKPOINT_REPO, commit_message="GLiDE checkpoint")
+        except Exception as e:  # noqa: BLE001
+            print(f"checkpoint upload failed ({e}); kept locally", flush=True)
+    print(f"checkpoint: epoch {state['epoch']}, {state['seen']:,} posts", flush=True)
+
+
 def train(spec, train_frame, val_frame, out: Path):
     """LoRA fine-tune. Saves weights.safetensors (adapters + readout), spec.json, best.json and history.json."""
     import torch
@@ -264,11 +308,27 @@ def train(spec, train_frame, val_frame, out: Path):
                                   weight_decay=spec.weight_decay)
     steps = spec.epochs * math.ceil(len(tr_ids) / spec.batch_size)
     scheduler = get_linear_schedule_with_warmup(optimizer, int(steps * spec.warmup), steps)
-    history, best = [], None
-    for epoch in range(1, spec.epochs + 1):
+    history, best, first, skip = [], None, 1, 0
+    ckpt, remote = out / "resume.pt", checkpoint_remote(spec, len(tr_ids))
+    fetch_checkpoint(ckpt, remote)
+    if ckpt.exists():
+        state = torch.load(ckpt, map_location=dev, weights_only=False)
+        net.load_state_dict(state["net"])
+        optimizer.load_state_dict(state["optimizer"])
+        scheduler.load_state_dict(state["scheduler"])
+        rng.bit_generator.state = state["rng"]
+        history, best, first, skip = state["history"], state["best"], state["epoch"], state["batches_done"]
+        print(f"resumed at epoch {first}, batch {skip}", flush=True)
+    for epoch in range(first, spec.epochs + 1):
         net.train(True)
-        total, seen, last = 0.0, 0, time.monotonic()
-        for batch in d1.batches(lengths, spec.batch_size, rng):
+        epoch_rng = rng.bit_generator.state  # the epoch's batches are rebuilt from this on resume
+        order = d1.batches(lengths, spec.batch_size, rng)
+        done = skip if epoch == first else 0
+        resumed = state if epoch == first and skip else None
+        total, seen = (resumed["total"], resumed["seen"]) if resumed else (0.0, 0)
+        last = saved = t0 = time.monotonic()
+        seen0 = seen
+        for b, batch in enumerate(order[done:], start=done):
             optimizer.zero_grad(set_to_none=True)
             for mb in micro_batches(batch, lengths, spec.token_budget):
                 loss = torch.nn.functional.cross_entropy(net([tr_ids[i] for i in mb]), y[mb])
@@ -282,8 +342,14 @@ def train(spec, train_frame, val_frame, out: Path):
             seen += len(batch)
             if time.monotonic() - last > 60:
                 print(f"epoch {epoch}: {seen:,}/{len(tr_ids):,} posts, loss {total / seen:.4f}, "
-                      f"{seen / (time.monotonic() - start):.1f} posts/s overall", flush=True)
+                      f"{(seen - seen0) / (time.monotonic() - t0):.1f} posts/s", flush=True)
                 last = time.monotonic()
+            if time.monotonic() - saved > CHECKPOINT_MINUTES * 60:
+                save_checkpoint(ckpt, remote, {"net": net.state_dict(), "optimizer": optimizer.state_dict(),
+                                               "scheduler": scheduler.state_dict(), "rng": epoch_rng, "epoch": epoch,
+                                               "batches_done": b + 1, "seen": seen, "total": total,
+                                               "history": history, "best": best})
+                saved = time.monotonic()
         candidates = rank_scores(spec.readout, infer(net, va_ids, spec.token_budget))
         scored = {name: d1.macro_scores(val_frame, p) for name, p in candidates.items()}
         rank_by = max(scored, key=lambda n: scored[n]["ap"])
@@ -347,7 +413,7 @@ def main(argv=None):
                            **({"val_per_sub": args.max_val} if args.max_val else {}),
                            **({"clean_train": True} if args.clean_train else {}))
             out = args.output / f"{name}_s{seed}"
-            # shortcut: --resume skips finished runs but restarts unfinished ones from scratch
+            # unfinished runs resume from resume.pt (local, else the HF mirror); finished ones are skipped
             if args.resume and (out / "complete.json").exists():
                 best = json.loads((out / "best.json").read_text())
             else:

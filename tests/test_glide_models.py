@@ -76,3 +76,16 @@ def test_prompts_fit_when_the_question_fills_most_tokens():
                             tokenizer=lambda texts, add_special_tokens: {"input_ids": [list(t) for t in texts]})
     ids = gm.encode_frame(frame, glide, lambda q: [], gm.Spec("noul", max_len=400, state_chars=2000))
     assert len(ids[0]) <= 400
+
+
+def test_checkpoint_path_is_unique_per_run_and_saves_without_a_token(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    a = gm.checkpoint_remote(gm.MODELS["glide_score10"], 1000)
+    assert a != gm.checkpoint_remote(gm.MODELS["glide_score10_clean8k"], 1000)
+    assert a != gm.checkpoint_remote(gm.MODELS["glide_score10"], 999)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    local = tmp_path / "resume.pt"
+    gm.fetch_checkpoint(local, a)  # no token: starts fresh
+    assert not local.exists()
+    gm.save_checkpoint(local, a, {"epoch": 1, "seen": 64, "net": {"w": torch.ones(2)}})
+    assert torch.load(local, weights_only=False)["seen"] == 64 and not local.with_suffix(".tmp").exists()
