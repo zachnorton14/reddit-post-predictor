@@ -159,8 +159,18 @@ def summarize(cfg, commit, rows, champion) -> str:
                   "chosen model on test against the champion."]
     else:
         lines += ["", "No champion is deployed yet, so there is nothing to compare with."]
+    for r in rows:
+        if r.get("error"):
+            lines += ["", f"<details><summary>{r['run']}: last lines of its output</summary>", "", "```",
+                      r["error"], "```", "", "</details>"]
     lines += ["", f"Files: `{MODEL_REPO}` → `{hf_prefix(cfg, commit)}/`"]
     return "\n".join(lines) + "\n"
+
+
+def log_tail(path, lines=40) -> str:
+    """The last lines of a runner log, without progress-bar redraws."""
+    text = Path(path).read_text(errors="replace").replace("\r", "\n").splitlines()
+    return "\n".join([line for line in text if line.strip() and "it/s]" not in line][-lines:])
 
 
 def evaluate_val(model_dir, dataset, revision, result, meta=None, per_sub=None) -> dict:
@@ -233,10 +243,13 @@ def main(argv=None) -> int:
             continue
         start = time.monotonic()
         print(f"{run}: training", flush=True)
-        done = subprocess.run(runner_command(cfg, model, seed, args.out, args.dataset, args.revision), cwd=ROOT)
+        log = args.out / f"{run}.log"  # the instance's output never reaches the workflow log; failures carry its tail
+        with open(log, "w") as f:
+            done = subprocess.run(runner_command(cfg, model, seed, args.out, args.dataset, args.revision), cwd=ROOT,
+                                  stdout=f, stderr=subprocess.STDOUT)
         best = args.out / "runs" / run / "best.json"
         if done.returncode != 0 or not best.exists():
-            rows.append({**row, "status": f"failed (exit {done.returncode})"})
+            rows.append({**row, "status": f"failed (exit {done.returncode})", "error": log_tail(log)})
             continue
         row.update(json.loads(best.read_text()))
         (args.out / "runs" / run / "experiment.json").write_text(json.dumps(

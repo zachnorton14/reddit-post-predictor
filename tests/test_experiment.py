@@ -112,6 +112,7 @@ for a in ["--models", "--seeds", "--output", "--results", "--dataset", "--revisi
 p.add_argument("--resume", action="store_true")
 a = p.parse_args()
 if a.models == "broken":
+    print("Traceback: something broke")
     sys.exit(3)
 run = pathlib.Path(a.output) / f"{a.models}_s{a.seeds}"
 run.mkdir(parents=True)
@@ -161,3 +162,4 @@ def test_main_runs_uploads_and_skips(tmp_path, monkeypatch):
     assert "| m_s1 | done | 0.3100 |" in summary
     assert "| m_s2 | already done | – |" in summary  # finished before validation scoring existed
     assert "| broken_s1 | failed (exit 3) |" in summary
+    assert "Traceback: something broke" in summary  # the failed run's output comes back with the summary
