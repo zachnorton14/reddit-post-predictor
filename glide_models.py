@@ -18,6 +18,7 @@ The checkpoint and the ranking score are chosen by macro AP on a 2024 validation
 import argparse
 import json
 import math
+import os
 import sys
 import time
 from dataclasses import asdict, dataclass, replace
@@ -88,13 +89,14 @@ def load_base(dev):
     from glide import Glide
     from glide.prompt import options_for
 
-    if dev == "cuda":  # fail now, not hours in: without Triton the linear-attention layers fall back to slow paths
+    fast = dev == "cuda" and not os.environ.get("GLIDE_ALLOW_SLOW")  # GLIDE_ALLOW_SLOW=1 accepts the PyTorch path
+    if fast:  # fail now, not hours in: without Triton the linear-attention layers fall back to slow paths
         import triton
 
         triton.runtime.driver.active.get_current_target()
         import fla.ops.gated_delta_rule  # noqa: F401  (raises the real error if the kernels can't load)
     model = Glide.from_pretrained(path, device=dev, dtype=torch.bfloat16, vision=False)
-    if dev == "cuda":
+    if fast:
         import inspect
 
         import transformers.models.qwen3_5.modeling_qwen3_5 as QM

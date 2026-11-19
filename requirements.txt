@@ -9,12 +9,13 @@ pyarrow>=17
 scikit-learn>=1.5
 scipy
 sentence-transformers>=6.2
-torch>=2.14
+torch>=2.14,<2.15
 transformers==5.20.2  # GLiDE (Qwen3.5) runs on this version; later ones renamed classes its package uses
 sentencepiece>=0.2  # DeBERTa-v3 tokenizer
 protobuf>=4
 pillow
 soundfile
 torchvision
+triton==3.8.0; sys_platform == "linux"  # GLiDE's tested versions: torch 2.14, triton 3.8, fla 0.5.2
 fla-core==0.5.2; sys_platform == "linux"  # GLiDE (Qwen3.5) linear-attention kernels; the full flash-linear-attention
 # package also loads fla.models, which breaks `import fla` under transformers 5.20 and silently selects the slow path

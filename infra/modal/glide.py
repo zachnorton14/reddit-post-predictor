@@ -28,14 +28,15 @@ hf_cache = modal.Volume.from_name("glide-hf-cache", create_if_missing=True)
 @app.function(image=image, gpu="H100", timeout=10 * 60 * 60, volumes={"/runs": runs, "/root/.cache/huggingface": hf_cache},
               secrets=[modal.Secret.from_local_environ(["HF_TOKEN"])])
 def train(model: str, seed: int, train_per_sub: int, val_per_sub: int, epochs: int, clean_train: bool = False,
-          tag: str = ""):
+          tag: str = "", allow_slow: bool = False):
     out = f"/runs/{tag}" if tag else "/runs"  # separate folders for runs of the same model and seed
     try:
         subprocess.run(["python", "glide_models.py", "--models", model, "--seeds", str(seed), "--output", f"{out}/runs",
                         "--results", f"{out}/results/{model}_s{seed}", "--dataset", DATASET, "--revision", REVISION,
                         "--max-train", str(train_per_sub), "--max-val", str(val_per_sub), "--epochs", str(epochs),
                         *(["--clean-train"] if clean_train else [])],
-                       cwd=REPO, check=True, env={**os.environ, "EVAL_CACHE": "/runs/eval_cache"})
+                       cwd=REPO, check=True, env={**os.environ, "EVAL_CACHE": "/runs/eval_cache",
+                                                  **({"GLIDE_ALLOW_SLOW": "1"} if allow_slow else {})})
     finally:
         runs.commit()
         hf_cache.commit()
@@ -43,6 +44,7 @@ def train(model: str, seed: int, train_per_sub: int, val_per_sub: int, epochs: i
 
 @app.local_entrypoint()
 def main(model: str = "glide_score10", seed: int = 42, train_per_sub: int = 5000, val_per_sub: int = 3000, epochs: int = 1,
-         clean_train: bool = False, tag: str = ""):
-    train.remote(model, seed, train_per_sub, val_per_sub, epochs, clean_train, tag)
+         clean_train: bool = False, tag: str = "",
+         allow_slow: bool = False):
+    train.remote(model, seed, train_per_sub, val_per_sub, epochs, clean_train, tag, allow_slow)
     print(f"done: modal volume get glide-runs runs/{model}_s{seed} data/glide/runs/")
