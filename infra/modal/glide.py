@@ -63,6 +63,7 @@ def score(run: str) -> dict:
     os.environ["EVAL_CACHE"] = "/runs/eval_cache"
     os.chdir(REPO)
     sys.path.insert(0, REPO)
+    sys.modules.pop("glide", None)  # this file is /root/glide.py; GLiDE's own `glide` package must win the import
     import glide_models
     from pipeline.data import load_eval
     from pipeline.evaluate import metrics
