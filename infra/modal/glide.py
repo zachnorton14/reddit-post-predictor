@@ -12,8 +12,8 @@ from pathlib import Path
 
 import modal
 
-ROOT = Path(__file__).resolve().parents[2]
 REPO = "/repo"
+ROOT = Path(__file__).resolve().parents[2] if modal.is_local() else Path(REPO)  # in the container this file sits at /root
 DATASET = "jbduran/textonly-subreddit-predictors"
 REVISION = "0d0f857fb0811889ec29bd3dcaae738774165065"  # the revision d1_omni_readouts was scored on
 
