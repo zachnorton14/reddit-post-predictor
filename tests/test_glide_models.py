@@ -63,3 +63,16 @@ def test_long_prompts_are_shortened_to_fit():
 def test_clean_train_drops_only_score0_commented_posts():
     frame = pd.DataFrame({"score": [0, 0, 5, 1], "num_comments": [3, 0, 0, 2]})
     assert gm.silent_removals_dropped(frame).index.tolist() == [1, 2, 3]
+
+
+def test_prompts_fit_when_the_question_fills_most_tokens():
+    """A fixed 380-token question leaves 20 tokens for the state: shrinking still converges."""
+    from types import SimpleNamespace
+
+    frame = pd.DataFrame({"subreddit": ["a"], "title": ["y" * 3000], "body": [""], "local_dow": 0, "local_hour": 0,
+                          "local_month": 1, "log_posts_prev_hour": 0.0, "log_posts_prev_day": 0.0,
+                          "log_author_prev_posts": 0.0, "has_author_flair": 0, "is_repost": 0})
+    glide = SimpleNamespace(prompter=SimpleNamespace(text=lambda state, q, opts: "q" * 380 + state),
+                            tokenizer=lambda texts, add_special_tokens: {"input_ids": [list(t) for t in texts]})
+    ids = gm.encode_frame(frame, glide, lambda q: [], gm.Spec("noul", max_len=400, state_chars=2000))
+    assert len(ids[0]) <= 400

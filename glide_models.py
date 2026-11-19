@@ -201,12 +201,12 @@ def encode_frame(frame, glide, options_for, spec):
         return glide.tokenizer(texts, add_special_tokens=False)["input_ids"]
 
     ids = encode(range(len(rows)))
-    for _ in range(8):
+    for attempt in range(16):
         long = [i for i, x in enumerate(ids) if len(x) > spec.max_len]
         if not long:
             return ids
-        for i in long:  # shrink in proportion to the overflow, with a margin
-            chars[i] = int(chars[i] * spec.max_len / len(ids[i]) * 0.9)
+        for i in long:  # shrink in proportion to the overflow, then halve (the question itself can fill most tokens)
+            chars[i] = int(chars[i] * min(spec.max_len / len(ids[i]) * 0.9, 0.5 if attempt else 1.0))
         for i, x in zip(long, encode(long)):
             ids[i] = x
     raise ValueError(f"{len(long)} prompts still exceed {spec.max_len} tokens")
