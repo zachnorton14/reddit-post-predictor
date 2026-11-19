@@ -27,11 +27,12 @@ hf_cache = modal.Volume.from_name("glide-hf-cache", create_if_missing=True)
 
 @app.function(image=image, gpu="H100", timeout=6 * 60 * 60, volumes={"/runs": runs, "/root/.cache/huggingface": hf_cache},
               secrets=[modal.Secret.from_local_environ(["HF_TOKEN"])])
-def train(model: str, seed: int, train_per_sub: int, val_per_sub: int, epochs: int):
+def train(model: str, seed: int, train_per_sub: int, val_per_sub: int, epochs: int, clean_train: bool = False):
     try:
         subprocess.run(["python", "glide_models.py", "--models", model, "--seeds", str(seed), "--output", "/runs/runs",
                         "--results", f"/runs/results/{model}_s{seed}", "--dataset", DATASET, "--revision", REVISION,
-                        "--max-train", str(train_per_sub), "--max-val", str(val_per_sub), "--epochs", str(epochs)],
+                        "--max-train", str(train_per_sub), "--max-val", str(val_per_sub), "--epochs", str(epochs),
+                        *(["--clean-train"] if clean_train else [])],
                        cwd=REPO, check=True, env={**os.environ, "EVAL_CACHE": "/runs/eval_cache"})
     finally:
         runs.commit()
@@ -39,6 +40,7 @@ def train(model: str, seed: int, train_per_sub: int, val_per_sub: int, epochs: i
 
 
 @app.local_entrypoint()
-def main(model: str = "glide_score10", seed: int = 42, train_per_sub: int = 5000, val_per_sub: int = 3000, epochs: int = 1):
-    train.remote(model, seed, train_per_sub, val_per_sub, epochs)
+def main(model: str = "glide_score10", seed: int = 42, train_per_sub: int = 5000, val_per_sub: int = 3000, epochs: int = 1,
+         clean_train: bool = False):
+    train.remote(model, seed, train_per_sub, val_per_sub, epochs, clean_train)
     print(f"done: modal volume get glide-runs runs/{model}_s{seed} data/glide/runs/")

@@ -50,6 +50,7 @@ class Spec:
     train_per_sub: int = 5_000
     val_per_sub: int = 1_000     # picks the ranking score; the experiment's eval_per_sub sample is the reported one
     seed: int = 42
+    clean_train: bool = False    # drop likely silent removals (score 0 but commented) from training; eval is unchanged
 
 
 MODELS = {"glide_noul": Spec("noul"), "glide_score10": Spec("score10")}
@@ -60,6 +61,12 @@ def rank_scores(readout, out):
     """GLiDE lists a noul's options as [true, false] (d1: [false, true]); score levels are in the same order."""
     out = np.asarray(out, dtype=np.float64)
     return d1.rank_scores(readout, out[:, ::-1] if readout == "noul" else out)
+
+
+def silent_removals_dropped(frame):
+    """Training posts without score-0-but-commented ones: mods (often AutoModerator) removed most of those without a
+    marker, so their label says nothing about the text. Labels were set on all posts, so thresholds don't move."""
+    return frame[~((frame.score == 0) & (frame.num_comments > 0))]
 
 
 def targets(frame, readout):
@@ -319,6 +326,7 @@ def main(argv=None):
     parser.add_argument("--revision", required=True)
     parser.add_argument("--max-train", type=int, help="smoke runs only: posts per subreddit")
     parser.add_argument("--max-val", type=int, help="smoke runs only: posts per subreddit")
+    parser.add_argument("--clean-train", action="store_true", help="drop likely silent removals from training")
     args = parser.parse_args(argv)
 
     rows = []
@@ -326,7 +334,8 @@ def main(argv=None):
         for seed in args.seeds:
             spec = replace(MODELS[name], seed=seed, **({"epochs": args.epochs} if args.epochs else {}),
                            **({"train_per_sub": args.max_train} if args.max_train else {}),
-                           **({"val_per_sub": args.max_val} if args.max_val else {}))
+                           **({"val_per_sub": args.max_val} if args.max_val else {}),
+                           **({"clean_train": True} if args.clean_train else {}))
             out = args.output / f"{name}_s{seed}"
             # shortcut: --resume skips finished runs but restarts unfinished ones from scratch
             if args.resume and (out / "complete.json").exists():
@@ -334,8 +343,9 @@ def main(argv=None):
             else:
                 data = load_eval(args.dataset, args.revision, body_chars=None, per_sub=spec.val_per_sub,
                                  validation_only=True, train_per_sub=spec.train_per_sub)
-                print(f"{name} seed {seed}: {len(data.train):,} train posts, {len(data.val):,} validation posts", flush=True)
-                best = train(spec, data.train, data.val, out)
+                train_frame = silent_removals_dropped(data.train) if spec.clean_train else data.train
+                print(f"{name} seed {seed}: {len(train_frame):,} train posts, {len(data.val):,} validation posts", flush=True)
+                best = train(spec, train_frame, data.val, out)
             rows.append({"model": name, "seed": seed, **{k: v for k, v in best.items() if k != "rankers"}})
     args.results.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_csv(args.results / "val_metrics.csv", index=False)

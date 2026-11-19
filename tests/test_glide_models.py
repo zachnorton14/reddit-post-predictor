@@ -58,3 +58,8 @@ def test_long_prompts_are_shortened_to_fit():
     ids = gm.encode_frame(frame, glide, lambda q: [], spec)
     assert all(len(x) <= 400 for x in ids)
     assert "x" * 50 in "".join(ids[0]) and "z" * 10 in "".join(ids[2]) and "y" in "".join(ids[1])
+
+
+def test_clean_train_drops_only_score0_commented_posts():
+    frame = pd.DataFrame({"score": [0, 0, 5, 1], "num_comments": [3, 0, 0, 2]})
+    assert gm.silent_removals_dropped(frame).index.tolist() == [1, 2, 3]
