@@ -135,12 +135,21 @@ def test_main_runs_uploads_and_skips(tmp_path, monkeypatch):
         def file_exists(self, repo, path):
             return path == "experiments/round1/abcdef0/m_s2/best.json"  # m_s2 finished in an earlier reservation
 
+        def upload_file(self, **kw):
+            uploads.append((kw["path_in_repo"], None, None))
+
         def upload_folder(self, **kw):
             uploads.append((kw["path_in_repo"], sorted(p.name for p in Path(kw["folder_path"]).iterdir()),
                             kw["ignore_patterns"]))
 
     monkeypatch.setattr(huggingface_hub, "HfApi", FakeApi)
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda repo, path: str(done))
+
+    def fake_snapshot(repo, allow_patterns, local_dir):  # m_s2's stored weights, never scored
+        (Path(local_dir) / allow_patterns[0][:-2]).mkdir(parents=True)
+        return str(local_dir)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot)
     monkeypatch.setattr(ex, "ROOT", tmp_path)
     monkeypatch.setattr(ex, "score_champion", lambda *a: None)
     scored = []
@@ -155,11 +164,28 @@ def test_main_runs_uploads_and_skips(tmp_path, monkeypatch):
     code = ex.main(["--config", str(cfg), "--dataset", "o/d", "--revision", "r", "--commit", "abcdef0123", "--out", str(out)])
 
     assert code == 1  # one run failed
-    assert scored == [("m_s1", {"name": "m_s1", "type": "prototype"})]
+    assert scored == [("m_s1", {"name": "m_s1", "type": "prototype"}), ("m_s2", {"name": "m_s2", "type": "prototype"})]
     assert uploads == [("experiments/round1/abcdef0/m_s1", ["best.json", "experiment.json", "resume.pt", "val_eval.json"],
-                        ["resume.pt", "best_checkpoint.pt"])]
+                        ["resume.pt", "best_checkpoint.pt"]), ("experiments/round1/abcdef0/m_s2/val_eval.json", None, None)]
     summary = (out / "summary.md").read_text()
     assert "| m_s1 | done | 0.3100 |" in summary
-    assert "| m_s2 | already done | – |" in summary  # finished before validation scoring existed
+    assert "| m_s2 | already done | 0.3100 |" in summary  # trained earlier but never scored: scored now
     assert "| broken_s1 | failed (exit 3) |" in summary
     assert "Traceback: something broke" in summary  # the failed run's output comes back with the summary
+
+
+def test_from_commit_reuses_earlier_runs_and_is_validated(tmp_path):
+    cfg = ex.load_config(write(tmp_path, "runner: run_pooling.py\nruns:\n  - {model: m, seeds: [1]}\nfrom_commit: 63fb1f1\n",
+                               name="again.yaml"))
+    assert ex.hf_prefix(cfg, "ffffffffff") == "experiments/again/63fb1f1"
+    with pytest.raises(ex.ConfigError, match="from_commit"):
+        ex.load_config(write(tmp_path, "runner: run_pooling.py\nruns:\n  - {model: m, seeds: [1]}\nfrom_commit: main\n",
+                             name="bad.yaml"))
+
+
+def test_scoring_failure_carries_its_output(tmp_path, monkeypatch):
+    (tmp_path / "pipeline").mkdir()
+    (tmp_path / "pipeline" / "evaluate.py").write_text("raise SystemExit('CUDA out of memory in predict')\n")
+    monkeypatch.setattr(ex, "ROOT", tmp_path)
+    with pytest.raises(RuntimeError, match="CUDA out of memory"):
+        ex.evaluate_val(tmp_path, "o/d", "r", tmp_path / "val_eval.json")

@@ -8,3 +8,6 @@ eval_per_sub: 3000
 runs:
   - {model: glide_score10_clean8k, seeds: [42]}
 allow_fallback: false
+# Trained at 63fb1f1 (in-training validation, 1,000 posts per subreddit: AP 0.303), but its 3,000-per-subreddit
+# scoring failed: score those stored weights instead of retraining.
+from_commit: 63fb1f1

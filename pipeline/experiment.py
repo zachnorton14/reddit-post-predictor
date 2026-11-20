@@ -48,7 +48,7 @@ MODEL_REPO = "zachnorton03/reddit-post-predictor-models"
 NAME = re.compile(r"^[a-z0-9_]+$")
 RUNNER = re.compile(r"^[a-z0-9_]+\.py$")
 MAX_RUNS = 50
-KEYS = {"runner", "runs", "epochs", "allow_fallback", "type", "eval_per_sub"}
+KEYS = {"runner", "runs", "epochs", "allow_fallback", "type", "eval_per_sub", "from_commit"}
 
 
 class ConfigError(ValueError):
@@ -92,11 +92,14 @@ def load_config(path) -> dict:
     per_sub = cfg.get("eval_per_sub")
     if per_sub is not None and (type(per_sub) is not int or per_sub < 1):
         raise ConfigError(f"{path}: `eval_per_sub` must be a positive whole number")
+    from_commit = cfg.get("from_commit")
+    if from_commit is not None and not (isinstance(from_commit, str) and re.fullmatch(r"[0-9a-f]{7,40}", from_commit)):
+        raise ConfigError(f"{path}: `from_commit` must be a commit hash (7+ lowercase hex characters)")
     if len(plan(cfg)) > MAX_RUNS:
         raise ConfigError(f"{path}: more than {MAX_RUNS} runs; split it into several configs")
     return {"name": path.stem, "runner": runner, "runs": runs, "epochs": epochs,
             "allow_fallback": cfg.get("allow_fallback", False), "type": cfg.get("type", "prototype"),
-            "eval_per_sub": per_sub}
+            "eval_per_sub": per_sub, "from_commit": from_commit}
 
 
 def plan(cfg) -> list[tuple[str, int]]:
@@ -114,7 +117,7 @@ def run_dir_name(model, seed) -> str:
 
 
 def hf_prefix(cfg, commit) -> str:
-    return f"experiments/{cfg['name']}/{commit[:7]}"
+    return f"experiments/{cfg['name']}/{(cfg.get('from_commit') or commit)[:7]}"  # from_commit: reuse earlier runs
 
 
 def runner_command(cfg, model, seed, out, dataset, revision) -> list[str]:
@@ -182,9 +185,14 @@ def evaluate_val(model_dir, dataset, revision, result, meta=None, per_sub=None) 
                 (Path(tmp) / f.name).symlink_to(f.resolve())
             (Path(tmp) / "model.json").write_text(json.dumps(meta))
             model_dir = tmp
-        subprocess.run([sys.executable, "-m", "pipeline.evaluate", "--model", str(model_dir), "--split", "val",
-                        "--dataset", dataset, "--revision", revision, "--out", str(result),
-                        *(["--per-sub", str(per_sub)] if per_sub else [])], check=True, cwd=ROOT)
+        log = Path(result).with_suffix(".log")
+        with open(log, "w") as f:
+            done = subprocess.run([sys.executable, "-m", "pipeline.evaluate", "--model", str(model_dir), "--split", "val",
+                                   "--dataset", dataset, "--revision", revision, "--out", str(result),
+                                   *(["--per-sub", str(per_sub)] if per_sub else [])], cwd=ROOT, stdout=f,
+                                  stderr=subprocess.STDOUT)
+        if done.returncode != 0:
+            raise RuntimeError(f"pipeline.evaluate exited {done.returncode}:\n{log_tail(log)}")
     return json.loads(Path(result).read_text())
 
 
@@ -224,7 +232,7 @@ def main(argv=None) -> int:
     if not all([args.config, args.dataset, args.revision, args.commit, args.out]):
         p.error("--config, --dataset, --revision, --commit and --out are required (or use --check)")
 
-    from huggingface_hub import HfApi, hf_hub_download
+    from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 
     cfg = load_config(args.config)
     api, prefix = HfApi(), hf_prefix(cfg, args.commit)
@@ -238,6 +246,15 @@ def main(argv=None) -> int:
             row.update(json.loads(Path(hf_hub_download(MODEL_REPO, f"{remote}/best.json")).read_text()))
             if api.file_exists(MODEL_REPO, f"{remote}/val_eval.json"):
                 row["eval"] = json.loads(Path(hf_hub_download(MODEL_REPO, f"{remote}/val_eval.json")).read_text())
+            else:  # trained but never scored (scoring failed, or it predates scoring): score the stored weights
+                local = Path(snapshot_download(MODEL_REPO, allow_patterns=[f"{remote}/*"], local_dir=args.out / "hf")) / remote
+                try:
+                    row["eval"] = evaluate_val(local, args.dataset, args.revision, local / "val_eval.json",
+                                               {"name": run, "type": cfg["type"]}, cfg["eval_per_sub"])
+                    api.upload_file(path_or_fileobj=str(local / "val_eval.json"), path_in_repo=f"{remote}/val_eval.json",
+                                    repo_id=MODEL_REPO, commit_message=f"Validation scores for {remote}")
+                except Exception as e:  # noqa: BLE001
+                    row["error"] = str(e)
             rows.append({**row, "status": "already done"})
             print(f"{run}: already on Hugging Face, skipping", flush=True)
             continue
@@ -261,6 +278,7 @@ def main(argv=None) -> int:
                                        cfg["eval_per_sub"])
         except Exception as e:  # keep the trained run; the table shows it unscored
             print(f"::warning::{run}: validation scoring failed: {e}", file=sys.stderr)
+            row["error"] = str(e)
         api.upload_folder(repo_id=MODEL_REPO, folder_path=args.out / "runs" / run, path_in_repo=remote,
                           ignore_patterns=["resume.pt", "best_checkpoint.pt"], commit_message=f"Experiment {remote}")
         rows.append({**row, "status": "done"})

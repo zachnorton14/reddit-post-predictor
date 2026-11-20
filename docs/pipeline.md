@@ -147,6 +147,7 @@ epochs: 3                       # optional
 allow_fallback: false           # optional; true allows the RTX 2080 Ti when no L40S is free (base-size models)
 type: prototype                 # optional; the pipeline/evaluate.py loader that reads the saved runs
 eval_per_sub: 3000              # optional; validation posts scored per subreddit (default all, up to 40,000), for slow models
+from_commit: 63fb1f1            # optional; reuse the runs stored at that commit: finished runs are skipped, unscored ones are scored
 ```
 
 **Runner contract.** Called once per run, from the repo root, in the training image:
