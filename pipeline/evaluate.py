@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 
 import dadjokes_models as dm
-from pipeline.data import load_eval
+from pipeline.data import EVAL_PER_SUB, load_eval
 
 
 def predict_minilm(model_dir, meta, data):
@@ -42,10 +42,24 @@ def predict_prototype(model_dir, meta, data):
     return pm.predict_checkpoint(model_dir, data.test)
 
 
+def predict_d1(model_dir, meta, data):
+    """A run saved by d1_models.train: weights.safetensors, spec.json, best.json (its ranking score)."""
+    import d1_models
+
+    return d1_models.predict(model_dir, data.test)
+
+
+def predict_glide(model_dir, meta, data):
+    """A run saved by glide_models.train: LoRA adapters and readout in weights.safetensors, spec.json, best.json."""
+    import glide_models
+
+    return glide_models.predict(model_dir, data.test)
+
+
 # model.json type -> loader(model_dir, meta, data) returning test predictions. Keep the deployed champion's type.
-LOADERS = {"minilm": predict_minilm, "prototype": predict_prototype}
-# Body characters each type reads (default 1000). Prototype runs read the full body and cut it themselves (spec.json).
-BODY_CHARS = {"prototype": None}
+LOADERS = {"minilm": predict_minilm, "prototype": predict_prototype, "d1": predict_d1, "glide": predict_glide}
+# Body characters each type reads (default 1000). These read the full body and cut it themselves.
+BODY_CHARS = {"prototype": None, "d1": None, "glide": None}
 
 
 def parse_args(argv=None):
@@ -55,6 +69,8 @@ def parse_args(argv=None):
     parser.add_argument("--revision", required=True, help="dataset commit")
     parser.add_argument("--out", required=True, type=Path, help="metrics JSON file")
     parser.add_argument("--split", choices=["test", "val"], default="test", help="split to score (default test)")
+    parser.add_argument("--per-sub", type=int, default=EVAL_PER_SUB, help="posts scored per subreddit (default all, up to "
+                        f"{EVAL_PER_SUB:,}); experiments lower it for slow models")
     return parser.parse_args(argv)
 
 
@@ -74,13 +90,13 @@ def scores(frame, p):
             "n": len(frame)}
 
 
-def metrics(frame, p, split="test"):
+def metrics(frame, p, split="test", min_posts=MIN_POSTS):
     p = np.asarray(p)
     by_sub = {sub: scores(frame[mask], p[mask])
               for sub in sorted(frame.subreddit.unique()) if (mask := (frame.subreddit == sub).to_numpy()).any()}
-    counted = [sub for sub, s in by_sub.items() if s["n"] >= MIN_POSTS]
+    counted = [sub for sub, s in by_sub.items() if s["n"] >= min_posts]
     if not counted:
-        raise SystemExit(f"no subreddit has {MIN_POSTS} or more {split} posts")
+        raise SystemExit(f"no subreddit has {min_posts} or more {split} posts")
     # compare_metrics.py gates on the macro pr_auc and top10_hit_rate and checks that `rows` match
     result = {m: float(np.mean([by_sub[sub][m] for sub in counted])) for m in METRICS}
     result |= {f"n_{split}": len(frame), "macro_subreddits": counted, "by_subreddit": by_sub}
@@ -96,7 +112,7 @@ def main(argv=None):
         raise SystemExit(f"unknown model type {meta.get('type')!r} in {args.model}/model.json; "
                          f"known types: {', '.join(LOADERS)}")
     data = load_eval(args.dataset, args.revision, body_chars=BODY_CHARS.get(meta["type"], 1000),
-                     validation_only=args.split == "val")
+                     per_sub=args.per_sub, validation_only=args.split == "val")
     if args.split == "val":
         # Loaders predict data.test; point it at validation so the loaders need no split argument
         data = copy.copy(data)

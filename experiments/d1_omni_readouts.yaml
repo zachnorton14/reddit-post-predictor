@@ -1,0 +1,14 @@
+# d1-omni-600M, round 1: which readout ranks posts best? Full fine-tune, 2 epochs, seed 42, every subreddit
+# (up to 25,000 training posts each, before 2024), scored on 2024 validation of every subreddit.
+#   d1_score10  d1's own head, 10 engagement levels (deciles within subreddit and quarter)
+#   d1_noul     d1's own head, yes/no "top 10% this quarter?"
+#   d1_reg      new MLP on the mean of d1's trunk states, regressing the engagement percentile
+# In priority order: a run cut off by the 10-hour reservation loses only itself. Round 2 tunes the winner
+# (learning rate, epochs, more training posts) and adds seeds.
+runner: d1_models.py
+type: d1
+runs:
+  - {model: d1_score10, seeds: [42]}
+  - {model: d1_noul, seeds: [42]}
+  - {model: d1_reg, seeds: [42]}
+allow_fallback: false

@@ -48,7 +48,7 @@ MODEL_REPO = "zachnorton03/reddit-post-predictor-models"
 NAME = re.compile(r"^[a-z0-9_]+$")
 RUNNER = re.compile(r"^[a-z0-9_]+\.py$")
 MAX_RUNS = 50
-KEYS = {"runner", "runs", "epochs", "allow_fallback", "type"}
+KEYS = {"runner", "runs", "epochs", "allow_fallback", "type", "eval_per_sub", "from_commit"}
 
 
 class ConfigError(ValueError):
@@ -89,10 +89,17 @@ def load_config(path) -> dict:
         raise ConfigError(f"{path}: `allow_fallback` must be true or false")
     if not isinstance(cfg.get("type", "prototype"), str) or not NAME.match(cfg.get("type", "prototype")):
         raise ConfigError(f"{path}: `type` must name a loader in pipeline/evaluate.py, like prototype")
+    per_sub = cfg.get("eval_per_sub")
+    if per_sub is not None and (type(per_sub) is not int or per_sub < 1):
+        raise ConfigError(f"{path}: `eval_per_sub` must be a positive whole number")
+    from_commit = cfg.get("from_commit")
+    if from_commit is not None and not (isinstance(from_commit, str) and re.fullmatch(r"[0-9a-f]{7,40}", from_commit)):
+        raise ConfigError(f"{path}: `from_commit` must be a commit hash (7+ lowercase hex characters)")
     if len(plan(cfg)) > MAX_RUNS:
         raise ConfigError(f"{path}: more than {MAX_RUNS} runs; split it into several configs")
     return {"name": path.stem, "runner": runner, "runs": runs, "epochs": epochs,
-            "allow_fallback": cfg.get("allow_fallback", False), "type": cfg.get("type", "prototype")}
+            "allow_fallback": cfg.get("allow_fallback", False), "type": cfg.get("type", "prototype"),
+            "eval_per_sub": per_sub, "from_commit": from_commit}
 
 
 def plan(cfg) -> list[tuple[str, int]]:
@@ -110,7 +117,7 @@ def run_dir_name(model, seed) -> str:
 
 
 def hf_prefix(cfg, commit) -> str:
-    return f"experiments/{cfg['name']}/{commit[:7]}"
+    return f"experiments/{cfg['name']}/{(cfg.get('from_commit') or commit)[:7]}"  # from_commit: reuse earlier runs
 
 
 def runner_command(cfg, model, seed, out, dataset, revision) -> list[str]:
@@ -124,7 +131,8 @@ def runner_command(cfg, model, seed, out, dataset, revision) -> list[str]:
 def summarize(cfg, commit, rows, champion) -> str:
     """Markdown tables of the runs (and per-model means) next to the champion, all scored by pipeline.evaluate."""
     fmt = lambda v, f=".4f": format(v, f) if isinstance(v, (int, float)) else "–"  # noqa: E731
-    lines = [f"### Experiment `{cfg['name']}` at `{commit[:7]}` (2024 validation, macro average over subreddits)", "",
+    sample = f", up to {cfg['eval_per_sub']:,} posts per subreddit" if cfg.get("eval_per_sub") else ""
+    lines = [f"### Experiment `{cfg['name']}` at `{commit[:7]}` (2024 validation{sample}, macro average over subreddits)", "",
              "| Run | Status | Val AP | Top-10% hit | Spearman | Minutes |", "|---|---|---:|---:|---:|---:|"]
     scored = ([{"run": f"**champion** {champion['name']}", "status": "deployed", "eval": champion}] if champion else []) \
         + rows
@@ -154,11 +162,21 @@ def summarize(cfg, commit, rows, champion) -> str:
                   "chosen model on test against the champion."]
     else:
         lines += ["", "No champion is deployed yet, so there is nothing to compare with."]
+    for r in rows:
+        if r.get("error"):
+            lines += ["", f"<details><summary>{r['run']}: last lines of its output</summary>", "", "```",
+                      r["error"], "```", "", "</details>"]
     lines += ["", f"Files: `{MODEL_REPO}` → `{hf_prefix(cfg, commit)}/`"]
     return "\n".join(lines) + "\n"
 
 
-def evaluate_val(model_dir, dataset, revision, result, meta=None) -> dict:
+def log_tail(path, lines=40) -> str:
+    """The last lines of a runner log, without progress-bar redraws."""
+    text = Path(path).read_text(errors="replace").replace("\r", "\n").splitlines()
+    return "\n".join([line for line in text if line.strip() and "it/s]" not in line][-lines:])
+
+
+def evaluate_val(model_dir, dataset, revision, result, meta=None, per_sub=None) -> dict:
     """pipeline.evaluate --split val on model_dir. `meta` is written as model.json in a linked copy, for runs that
     have none (the run folder itself is left as the runner wrote it)."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -167,12 +185,18 @@ def evaluate_val(model_dir, dataset, revision, result, meta=None) -> dict:
                 (Path(tmp) / f.name).symlink_to(f.resolve())
             (Path(tmp) / "model.json").write_text(json.dumps(meta))
             model_dir = tmp
-        subprocess.run([sys.executable, "-m", "pipeline.evaluate", "--model", str(model_dir), "--split", "val",
-                        "--dataset", dataset, "--revision", revision, "--out", str(result)], check=True, cwd=ROOT)
+        log = Path(result).with_suffix(".log")
+        with open(log, "w") as f:
+            done = subprocess.run([sys.executable, "-m", "pipeline.evaluate", "--model", str(model_dir), "--split", "val",
+                                   "--dataset", dataset, "--revision", revision, "--out", str(result),
+                                   *(["--per-sub", str(per_sub)] if per_sub else [])], cwd=ROOT, stdout=f,
+                                  stderr=subprocess.STDOUT)
+        if done.returncode != 0:
+            raise RuntimeError(f"pipeline.evaluate exited {done.returncode}:\n{log_tail(log)}")
     return json.loads(Path(result).read_text())
 
 
-def score_champion(dataset, revision, out) -> dict | None:
+def score_champion(dataset, revision, out, per_sub=None) -> dict | None:
     """The deployed model's validation scores, or None if nothing is deployed."""
     sys.path.insert(0, str(ROOT / "scripts"))
     import hf_models
@@ -181,7 +205,7 @@ def score_champion(dataset, revision, out) -> dict | None:
         champ = hf_models.fetch_champion(Path(tmp))
         if not champ:
             return None
-        result = evaluate_val(tmp, dataset, revision, out / "champion_val.json")
+        result = evaluate_val(tmp, dataset, revision, out / "champion_val.json", per_sub=per_sub)
     return {"name": champ["name"], "version": champ["version"], **result}
 
 
@@ -208,7 +232,7 @@ def main(argv=None) -> int:
     if not all([args.config, args.dataset, args.revision, args.commit, args.out]):
         p.error("--config, --dataset, --revision, --commit and --out are required (or use --check)")
 
-    from huggingface_hub import HfApi, hf_hub_download
+    from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 
     cfg = load_config(args.config)
     api, prefix = HfApi(), hf_prefix(cfg, args.commit)
@@ -222,15 +246,27 @@ def main(argv=None) -> int:
             row.update(json.loads(Path(hf_hub_download(MODEL_REPO, f"{remote}/best.json")).read_text()))
             if api.file_exists(MODEL_REPO, f"{remote}/val_eval.json"):
                 row["eval"] = json.loads(Path(hf_hub_download(MODEL_REPO, f"{remote}/val_eval.json")).read_text())
+            else:  # trained but never scored (scoring failed, or it predates scoring): score the stored weights
+                local = Path(snapshot_download(MODEL_REPO, allow_patterns=[f"{remote}/*"], local_dir=args.out / "hf")) / remote
+                try:
+                    row["eval"] = evaluate_val(local, args.dataset, args.revision, local / "val_eval.json",
+                                               {"name": run, "type": cfg["type"]}, cfg["eval_per_sub"])
+                    api.upload_file(path_or_fileobj=str(local / "val_eval.json"), path_in_repo=f"{remote}/val_eval.json",
+                                    repo_id=MODEL_REPO, commit_message=f"Validation scores for {remote}")
+                except Exception as e:  # noqa: BLE001
+                    row["error"] = str(e)
             rows.append({**row, "status": "already done"})
             print(f"{run}: already on Hugging Face, skipping", flush=True)
             continue
         start = time.monotonic()
         print(f"{run}: training", flush=True)
-        done = subprocess.run(runner_command(cfg, model, seed, args.out, args.dataset, args.revision), cwd=ROOT)
+        log = args.out / f"{run}.log"  # the instance's output never reaches the workflow log; failures carry its tail
+        with open(log, "w") as f:
+            done = subprocess.run(runner_command(cfg, model, seed, args.out, args.dataset, args.revision), cwd=ROOT,
+                                  stdout=f, stderr=subprocess.STDOUT)
         best = args.out / "runs" / run / "best.json"
         if done.returncode != 0 or not best.exists():
-            rows.append({**row, "status": f"failed (exit {done.returncode})"})
+            rows.append({**row, "status": f"failed (exit {done.returncode})", "error": log_tail(log)})
             continue
         row.update(json.loads(best.read_text()))
         (args.out / "runs" / run / "experiment.json").write_text(json.dumps(
@@ -238,16 +274,18 @@ def main(argv=None) -> int:
              "runner": cfg["runner"], "model": model, "seed": seed, "epochs": cfg["epochs"]}, indent=2))
         try:
             row["eval"] = evaluate_val(args.out / "runs" / run, args.dataset, args.revision,
-                                       args.out / "runs" / run / "val_eval.json", {"name": run, "type": cfg["type"]})
+                                       args.out / "runs" / run / "val_eval.json", {"name": run, "type": cfg["type"]},
+                                       cfg["eval_per_sub"])
         except Exception as e:  # keep the trained run; the table shows it unscored
             print(f"::warning::{run}: validation scoring failed: {e}", file=sys.stderr)
+            row["error"] = str(e)
         api.upload_folder(repo_id=MODEL_REPO, folder_path=args.out / "runs" / run, path_in_repo=remote,
                           ignore_patterns=["resume.pt", "best_checkpoint.pt"], commit_message=f"Experiment {remote}")
         rows.append({**row, "status": "done"})
         print(f"{run}: done in {(time.monotonic() - start) / 60:.0f} min, uploaded to {remote}", flush=True)
 
     try:
-        champion = score_champion(args.dataset, args.revision, args.out)
+        champion = score_champion(args.dataset, args.revision, args.out, cfg["eval_per_sub"])
     except Exception as e:  # the runs are already stored; a champion problem shouldn't hide them
         print(f"::warning::could not score the champion on validation: {e}", file=sys.stderr)
         champion = None

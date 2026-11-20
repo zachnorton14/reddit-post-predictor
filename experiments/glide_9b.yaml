@@ -1,0 +1,11 @@
+# Does scaling help? GLiDE-9B (Qwen3.5-9B decision model), LoRA r16 on every linear layer + its readout, bf16,
+# 1 epoch, seed 42, every subreddit (up to 5,000 training posts each, before 2024). Same state text and question
+# as d1_score10 (10 engagement levels within subreddit and quarter), the best d1 readout on the 3,000-per-subreddit
+# validation sample in d1_omni_readouts (AP 0.283). Scored on that same sample size: the full 2024 validation set
+# would take about 9 hours for a 9B model on the L40S. No 2080 Ti fallback (11 GB doesn't hold 16 GB of weights).
+runner: glide_models.py
+type: glide
+eval_per_sub: 3000
+runs:
+  - {model: glide_score10, seeds: [42]}
+allow_fallback: false
