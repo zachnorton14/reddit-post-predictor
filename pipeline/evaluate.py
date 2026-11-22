@@ -24,14 +24,19 @@ import dadjokes_models as dm
 from pipeline.data import load_eval
 
 
-def predict_minilm(model_dir, meta, data):
+def load_minilm(model_dir, meta):
+    """The saved MiniLM regression net (on dm.device()) and its tokenizer. pipeline/serve.py uses it too."""
     import torch
     from transformers import AutoTokenizer
 
     net = dm.regression_net(meta["base_model"])
-    net.load_state_dict(torch.load(model_dir / "model.pt", map_location="cpu"))
+    net.load_state_dict(torch.load(Path(model_dir) / "model.pt", map_location="cpu"))
     net.to(dm.device())
-    tok = AutoTokenizer.from_pretrained(model_dir)
+    return net, AutoTokenizer.from_pretrained(model_dir)
+
+
+def predict_minilm(model_dir, meta, data):
+    net, tok = load_minilm(model_dir, meta)
     return dm.predict_net(net, tok, dm.text_of(data.test), meta["max_len"], meta["mu"], meta["sd"])
 
 

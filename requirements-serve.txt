@@ -1,0 +1,13 @@
+# What pipeline/serve.py needs at inference (docker/serve.Dockerfile). The image installs CPU-only torch first.
+duckdb>=1.1
+fastapi
+huggingface_hub>=0.25
+matplotlib>=3.10
+numpy
+pandas>=2.2
+pyarrow>=17
+scikit-learn>=1.5
+scipy
+torch>=2.14
+transformers>=5.20
+uvicorn>=0.30

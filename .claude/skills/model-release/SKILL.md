@@ -46,9 +46,12 @@ Examples: `run_pooling-435M-deberta_large_attn4`, `dadjokes_models-22M-minilm_l6
 2. On a feature branch, set `candidate.yaml` (`path` from the results table, `name`, `type`). Open a PR into `dev`.
    CI must pass. Merging trains nothing.
 3. Open a PR from `dev` into `release`. `release-check` downloads the folder at a pinned revision, scores it and the
-   champion on the same test data, and fails if `pr_auc` or `top10_hit_rate` drops more than 0.01.
-4. Merge. `deploy` downloads the same revision, ships it, publishes the GitHub release `model-<n>`, and promotes it
-   on Hugging Face (`release.json` next to the weights, tag `model-<n>`, `champion.json`).
+   model on staging (the latest `rc-<n>`, else the champion) on the same test data, and fails if `pr_auc` or `top10_hit_rate` drops more than 0.01.
+4. Merge. `deploy` downloads the same revision, serves it on the VCL staging instance, and publishes the GitHub
+   pre-release `rc-<n>` with `release.json`. It does not make the model the champion.
+5. Production (planned, issue #22): a push to `main` will deploy the staged image to Kubernetes, publish `model-<n>`
+   and promote it on Hugging Face (`release.json` next to the weights, tag `model-<n>`, `champion.json`). Until then
+   there is no champion.
 
 To retrain `pipeline/train.py`'s model instead (for example on new data), run
 `gh workflow run train-eval.yml --ref <branch>` and set `path: models/<MODEL_NAME>/model`, `type: minilm`.

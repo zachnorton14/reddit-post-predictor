@@ -29,4 +29,9 @@ environments:
     length_minutes: 120
     wait_timeout_minutes: 30
 
-  # Add a CPU profile (for smoke tests) once its image name is known; the loader rejects an empty image.
+  cpu-staging:
+    description: CPU instance (16 cores, 128 GB RAM) that serves the released model; deploy.yml reserves it
+    # VCL image id 7392. Staging lasts as long as this reservation; the next deploy replaces it.
+    image: "Ubuntu 22.04 - 16 cores 128 GB RAM"
+    length_minutes: 240
+    wait_timeout_minutes: 30

@@ -1,4 +1,4 @@
-# Required check on `release`: score the model named in candidate.yaml on test against the deployed champion.
+# Required check on `release`: score the model named in candidate.yaml on test against the model on staging.
 # Nothing is trained. The weights were trained once (in an experiment or a train-eval run) and are scored here at
 # a pinned Hugging Face revision; deploy.yml ships exactly that revision.
 #
@@ -7,6 +7,9 @@
 # pull_request_target runs this file as it is on `release`, not the pull request's copy, and only for pull requests
 # from this repo's own `dev` branch (others fail). So the self-hosted runner and the secrets never run fork code. `dev` is
 # protected: everything on it came through a reviewed pull request.
+# The baseline is the latest release candidate `rc-<n>` (the model deploy.yml staged): its GitHub pre-release has
+# release.json with the HF folder and revision it served. With no rc yet, the baseline is the production champion
+# (champion.json), and with neither the check passes on the candidate alone.
 # On a pass, the job uploads the artifact `release-<head commit>` (release.json: what was scored, at which
 # revision, and both models' metrics). deploy.yml finds it by that name.
 name: release-check
@@ -36,6 +39,11 @@ jobs:
       name: ${{ steps.cand.outputs.name }}
       type: ${{ steps.cand.outputs.type }}
       revision: ${{ steps.cand.outputs.revision }}
+      baseline_version: ${{ steps.base.outputs.version }}
+      baseline_path: ${{ steps.base.outputs.path }}
+      baseline_revision: ${{ steps.base.outputs.revision }}
+      baseline_name: ${{ steps.base.outputs.name }}
+      baseline_type: ${{ steps.base.outputs.type }}
     steps:
       # Fail rather than skip: a skipped job would count as a passing required check.
       - name: Only pull requests from this repo's dev branch
@@ -62,6 +70,23 @@ jobs:
             echo "$k=$(python -c "import json,sys; print(json.load(open('cand.json'))[sys.argv[1]])" $k)" >> "$GITHUB_OUTPUT"
           done
           echo "Candidate: \`$(cat cand.json)\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: Find the baseline (the latest release candidate on staging)
+        id: base
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git fetch -q --tags origin
+          tag=$(python scripts/release_version.py latest rc)
+          if [ -z "$tag" ]; then
+            echo "No release candidate yet: comparing against the production champion, if there is one." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern release.json --dir baseline
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+          for k in path revision name type; do
+            echo "$k=$(python -c "import json,sys; print(json.load(open('baseline/release.json'))[sys.argv[1]])" $k)" >> "$GITHUB_OUTPUT"
+          done
+          echo "Baseline: \`$tag\` (staging), \`$(python -c "import json; r=json.load(open('baseline/release.json')); print(r['name'], r['path'], r['revision'][:7])")\`" >> "$GITHUB_STEP_SUMMARY"
 
   image:
     needs: plan
@@ -162,7 +187,10 @@ jobs:
             -e image="${{ needs.image.outputs.ref }}" -e dataset="$DATASET" \
             -e revision="${{ steps.data.outputs.revision }}" -e results_dir="$PWD/gate" \
             -e candidate_path="${{ needs.plan.outputs.path }}" -e candidate_revision="${{ needs.plan.outputs.revision }}" \
-            -e candidate_name="${{ needs.plan.outputs.name }}" -e candidate_type="${{ needs.plan.outputs.type }}"
+            -e candidate_name="${{ needs.plan.outputs.name }}" -e candidate_type="${{ needs.plan.outputs.type }}" \
+            -e baseline_path="${{ needs.plan.outputs.baseline_path }}" \
+            -e baseline_revision="${{ needs.plan.outputs.baseline_revision }}" \
+            -e baseline_name="${{ needs.plan.outputs.baseline_name }}" -e baseline_type="${{ needs.plan.outputs.baseline_type }}"
 
       - name: End the reservation
         if: always()
@@ -173,15 +201,17 @@ jobs:
           fi
           rm -f vcl_inventory.ini .vcl_state.json "$KEY"
 
-      - name: Compare the candidate against the champion
+      - name: Compare the candidate against the baseline
+        env:
+          BASELINE: ${{ needs.plan.outputs.baseline_version }}
         run: |
           {
             echo "### Release check: \`${{ needs.plan.outputs.name }}\` on test"
             echo; echo '```'; cat gate/metrics.json; echo; echo '```'
             if [ -f gate/champion_metrics.json ]; then
-              echo "Champion:"; echo '```'; cat gate/champion_metrics.json; echo; echo '```'
+              echo "Baseline (${BASELINE:-production champion}):"; echo '```'; cat gate/champion_metrics.json; echo; echo '```'
             else
-              echo "No champion is deployed yet."
+              echo "No release candidate or champion yet: nothing to compare against."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           python3 scripts/compare_metrics.py gate/metrics.json gate/champion_metrics.json
@@ -195,6 +225,7 @@ jobs:
           IMAGE_: ${{ needs.image.outputs.ref }}
           DATA_REVISION: ${{ steps.data.outputs.revision }}
           PR: ${{ github.event.pull_request.number }}
+          BASELINE: ${{ needs.plan.outputs.baseline_version }}
         run: |
           mkdir -p release
           python - <<'EOF'
@@ -206,6 +237,7 @@ jobs:
                      "dataset": os.environ["DATASET"], "dataset_revision": os.environ["DATA_REVISION"],
                      "image": os.environ["IMAGE_"], "gate_run": int(os.environ["GITHUB_RUN_ID"]),
                      "metrics": json.loads(Path("gate/metrics.json").read_text()),
+                     "baseline": os.environ["BASELINE"] or ("champion" if champ.exists() else None),
                      "champion_metrics": json.loads(champ.read_text()) if champ.exists() else None}
           Path("release/release.json").write_text(json.dumps(release, indent=2) + "\n")
           EOF

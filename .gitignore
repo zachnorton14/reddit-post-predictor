@@ -13,3 +13,6 @@ __pycache__/
 .vcl_state.json
 *.vcl.ini
 vcl_inventory.ini
+
+# Model baked into the serve image (deploy.yml fetches it here)
+/model/
