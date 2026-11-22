@@ -28,7 +28,7 @@ A model is trained once and then only scored.
 | `train-eval-modal.yml` | manual only | GitHub-hosted | fallback: trains and evaluates on a Modal GPU, gates (see "Modal fallback") |
 | `experiment.yml` | push to a feature branch that changes `experiments/*.yaml`; manual (`-f config=...`) | hosted + self-hosted controller | runs every listed research run on a VCL L40S, validation only; stores each on HF; posts a table on the PR (see "Experiments"). Advisory, never blocks. |
 | `vcl-cleanup.yml` | every 30 minutes; manual | self-hosted controller | ends reservations that a pipeline job recorded but couldn't end (`scripts/vcl_ledger.py`) |
-| `deploy.yml` | push to `release` | hosted + self-hosted controller | downloads the weights at the revision `release-check` scored, builds the CPU inference image, serves it on a VCL `cpu-staging` instance and checks it answers, publishes the pre-release `rc-<n>` with `release.json` (see "Staging"). No promotion. |
+| `deploy.yml` | push to `release`; manual = dry run | hosted + self-hosted controller | downloads the weights at the revision `release-check` scored, builds the CPU inference image, serves it on a VCL `cpu-staging` instance and checks it answers, publishes the pre-release `rc-<n>` with `release.json` (see "Staging"). No promotion. |
 
 ## Runners
 
@@ -205,6 +205,12 @@ latest `rc-<n>` (see "The baseline" above), so the gate works before production 
 Staging lasts until its reservation ends; the next deploy replaces it. It is recorded in
 `~/.vcl-pipeline/staging.json`, not in the cleanup ledger, so `vcl-cleanup` leaves it alone. While the deploy job
 runs, the new reservation is in the ledger, so a crashed job doesn't leak it.
+
+**Dry run.** `gh workflow run deploy.yml --ref <branch>` tests the whole staging path from any branch, before a
+release. It builds the `candidate.yaml` model at the models repo's current revision (no `release-check` artifact),
+pushes only `serve:dryrun-<short commit>`, stages it on a new `cpu-staging` instance with the same `/health` and
+`/predict` checks, and then ends that reservation. It publishes no `rc-<n>` and leaves the real staging alone. It
+takes the controller for about 15–20 minutes, like any VCL job.
 
 **Reaching it.** Only the controller can reach the instance. The job summary prints the IP and a tunnel command:
 
