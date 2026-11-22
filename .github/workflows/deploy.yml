@@ -16,6 +16,11 @@
 # it. The job reserves a new `cpu-staging` instance, starts the image there, checks /health and /predict, and only
 # then ends the previous staging reservation. If anything fails, the new reservation is ended and the old staging
 # keeps serving. The new one is left running: staging lasts until its reservation ends (see docs/pipeline.md).
+#
+# A manual run is a dry run: `gh workflow run deploy.yml --ref <branch>`. It builds the candidate.yaml model at the
+# models repo's current revision (no release-check artifact needed), stages it on a new cpu-staging instance with the
+# same checks, then ends that reservation. It publishes no rc-<n>, leaves the real staging alone and pushes only
+# `serve:dryrun-<short commit>`. Use it to test the deploy path from a branch before a release.
 name: deploy
 
 on:
@@ -34,6 +39,7 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}/serve
+  DRY_RUN: ${{ github.event_name == 'workflow_dispatch' }}
 
 jobs:
   build:
@@ -48,10 +54,27 @@ jobs:
       - name: Pick the release candidate version
         id: version
         run: |
-          version=$(python3 scripts/release_version.py next rc "${{ github.sha }}")
+          if [ "$DRY_RUN" = true ]; then
+            version="dryrun-${GITHUB_SHA::7}"
+            echo "Dry run: \`$version\`. Nothing is published and the reservation is ended at the end." >> "$GITHUB_STEP_SUMMARY"
+          else
+            version=$(python3 scripts/release_version.py next rc "${{ github.sha }}")
+            echo "Release candidate: \`$version\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Release candidate: \`$version\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: Use candidate.yaml at the models repo's current revision (dry run)
+        if: env.DRY_RUN == 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pip install -q pyyaml "huggingface_hub>=0.25"
+          mkdir -p release
+          python scripts/hf_models.py candidate candidate.yaml --resolve > release/candidate.json
+          python3 -c "import json; c=json.load(open('release/candidate.json')); c['dry_run']=True
+          json.dump(c, open('release/release.json', 'w'), indent=2)"
+          cat release/release.json
       - name: Find the release check that passed for this merge
+        if: env.DRY_RUN != 'true'
         id: run
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -63,7 +86,8 @@ jobs:
           [ -n "$id" ] || { echo "::error::No passing release check for ${head:0:7} (artifact release-$head)"; exit 1; }
           echo "id=$id" >> "$GITHUB_OUTPUT"
           echo "head=$head" >> "$GITHUB_OUTPUT"
-      - uses: actions/download-artifact@v4
+      - if: env.DRY_RUN != 'true'
+        uses: actions/download-artifact@v4
         with:
           name: release-${{ steps.run.outputs.head }}
           path: release
@@ -89,9 +113,12 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          ref="${IMAGE,,}:sha-${{ github.sha }}"
-          docker buildx build -f docker/serve.Dockerfile --build-arg MODEL_VERSION="$VERSION" \
-            --push -t "$ref" -t "${IMAGE,,}:$VERSION" -t "${IMAGE,,}:staging" .
+          if [ "$DRY_RUN" = true ]; then
+            ref="${IMAGE,,}:$VERSION" && tags=(-t "$ref")  # never sha- or staging: production must not pick it up
+          else
+            ref="${IMAGE,,}:sha-${{ github.sha }}" && tags=(-t "$ref" -t "${IMAGE,,}:$VERSION" -t "${IMAGE,,}:staging")
+          fi
+          docker buildx build -f docker/serve.Dockerfile --build-arg MODEL_VERSION="$VERSION" --push "${tags[@]}" .
           echo "image=$ref" >> "$GITHUB_OUTPUT"
       - name: Add the serve image and version to release.json
         env:
@@ -142,13 +169,17 @@ jobs:
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Find the current staging reservation
+        if: env.DRY_RUN != 'true'
         id: previous
         run: echo "request_id=$(python scripts/vcl_staging.py current)" >> "$GITHUB_OUTPUT"
 
       - name: Reserve a CPU staging instance
         id: vcl
         run: |
-          python -m vcl up cpu-staging --inventory vcl_inventory.ini
+          # A dry run ends its instance at the end of this job; the timeout bounds it anyway.
+          length=()
+          if [ "$DRY_RUN" = true ]; then length=(--length 60); fi
+          python -m vcl up cpu-staging --inventory vcl_inventory.ini "${length[@]}"
           # Until this job hands it over to staging, the cleanup sweep ends it if the job dies.
           python scripts/vcl_ledger.py add
 
@@ -163,6 +194,7 @@ jobs:
         run: ansible-playbook -i vcl_inventory.ini --private-key "$KEY" infra/ansible/staging.yml -e image="$IMAGE_REF"
 
       - name: Make it staging and end the previous staging reservation
+        if: env.DRY_RUN != 'true'
         env:
           PREVIOUS: ${{ steps.previous.outputs.request_id }}
         run: |
@@ -175,8 +207,8 @@ jobs:
             python -m vcl down "$PREVIOUS" || echo "::warning::Couldn't end the previous staging reservation $PREVIOUS"
           fi
 
-      - name: End the new reservation if the deploy failed
-        if: failure()
+      - name: End the new reservation if the deploy failed or this is a dry run
+        if: always() && (failure() || cancelled() || env.DRY_RUN == 'true')
         run: |
           if [ -f .vcl_state.json ]; then
             id=$(python -c "import json; print(json.load(open('.vcl_state.json'))['request_id'])")
@@ -187,7 +219,14 @@ jobs:
         if: always()
         run: rm -f vcl_inventory.ini .vcl_state.json "$KEY"
 
+      - name: Dry run result
+        if: env.DRY_RUN == 'true'
+        run: |
+          echo "### Dry run passed: \`$IMAGE_REF\` served and answered /health and /predict on VCL \`cpu-staging\`." \
+            "The reservation was ended; staging is unchanged." >> "$GITHUB_STEP_SUMMARY"
+
       - name: How to reach staging
+        if: env.DRY_RUN != 'true'
         env:
           IP: ${{ steps.vcl.outputs.ip }}
           SSH_USER: ${{ steps.vcl.outputs.user }}
@@ -211,6 +250,7 @@ jobs:
   # deploy can find it later (a release asset doesn't expire like a workflow artifact). No Hugging Face promotion.
   record:
     needs: [build, deploy-staging]
+    if: github.event_name != 'workflow_dispatch'  # a dry run publishes nothing
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.build.outputs.version }}
