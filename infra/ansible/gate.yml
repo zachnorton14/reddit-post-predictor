@@ -2,7 +2,9 @@
 #
 # Run by .github/workflows/release-check.yml after `train.yml --tags setup` (Docker and the NVIDIA runtime).
 # Extra vars: image, dataset, revision (dataset commit), candidate_path, candidate_revision, candidate_name,
-# candidate_type, results_dir. Environment: GHCR_USER, GHCR_TOKEN, HF_TOKEN.
+# candidate_type, results_dir, and optional baseline_path, baseline_revision, baseline_name, baseline_type (the model to
+# compare against; without them, the production champion from champion.json). Environment: GHCR_USER, GHCR_TOKEN,
+# HF_TOKEN. The baseline is scored into champion_metrics.json either way.
 # The instance downloads both models from Hugging Face itself (the weights can be gigabytes); only the metrics come
 # back to the controller.
 - name: Score the release candidate and the champion
@@ -47,9 +49,18 @@
             --name {{ candidate_name }} --type {{ candidate_type }}
           changed_when: true
 
-        - name: Download the champion (the deployed model), if there is one
+        # The baseline is the latest release candidate on staging (rc-<n>), when release-check found one.
+        - name: Download the baseline (the staged release candidate) at its pinned revision
+          ansible.builtin.command: >-
+            {{ run }} python scripts/hf_models.py fetch {{ baseline_path }} {{ baseline_revision }} /out/champion
+            --name {{ baseline_name }} --type {{ baseline_type }}
+          changed_when: true
+          when: baseline_path | default('') | length > 0
+
+        - name: Download the champion (the production model), if there is one and no baseline was given
           ansible.builtin.command: "{{ run }} python scripts/hf_models.py fetch-champion /out/champion"
           changed_when: true
+          when: baseline_path | default('') | length == 0
 
         - name: Score the candidate on test
           ansible.builtin.command: >-

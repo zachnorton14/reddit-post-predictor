@@ -1,0 +1,113 @@
+# Run the inference image on the VCL CPU staging instance and check that it answers.
+#
+# Run by .github/workflows/deploy.yml against the inventory that `python -m vcl up cpu-staging` writes (group `vcl`).
+# Extra vars: image (the serve image on GHCR), optional port (default 8000). Environment: GHCR_USER, GHCR_TOKEN.
+# Uses only ansible-core modules. The model is baked into the image, so the instance needs no Hugging Face token.
+# The container restarts with Docker, and staging lasts until the reservation ends.
+- name: Deploy the inference image to staging
+  hosts: vcl
+  become: true
+  gather_facts: false
+  module_defaults:
+    ansible.builtin.apt:
+      # Fresh VCL images can still be applying unattended Ubuntu updates when SSH becomes ready.
+      lock_timeout: 900
+  vars:
+    port: 8000
+    container: serve
+  tasks:
+    - name: Wait for SSH (VCL opens the firewall shortly after the reservation is ready)
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+        sleep: 10
+
+    - name: Check whether Docker is installed
+      ansible.builtin.command: docker --version
+      register: docker_version
+      changed_when: false
+      failed_when: false
+
+    - name: Install Docker
+      ansible.builtin.apt:
+        name: docker.io
+        state: present
+        update_cache: true
+      when: docker_version.rc != 0
+
+    - name: Start Docker
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Pull and start the image
+      block:
+        - name: Log in to GHCR
+          ansible.builtin.command:
+            cmd: docker login ghcr.io -u {{ lookup('env', 'GHCR_USER') }} --password-stdin
+            stdin: "{{ lookup('env', 'GHCR_TOKEN') }}"
+          no_log: true
+          changed_when: false
+
+        - name: Pull the inference image
+          ansible.builtin.command: docker pull {{ image }}
+          changed_when: true
+      always:
+        # The GITHUB_TOKEN expires with the run; don't leave it on the instance.
+        - name: Log out of GHCR
+          ansible.builtin.command: docker logout ghcr.io
+          changed_when: false
+          failed_when: false
+
+    - name: Remove an earlier container
+      ansible.builtin.command: docker rm -f {{ container }}
+      changed_when: false
+      failed_when: false
+
+    - name: Start the server and check that it answers
+      block:
+        - name: Start the server
+          ansible.builtin.command: >-
+            docker run -d --name {{ container }} --restart unless-stopped -p {{ port }}:8000 {{ image }}
+          changed_when: true
+
+        - name: Wait for /health
+          ansible.builtin.uri:
+            url: "http://localhost:{{ port }}/health"
+            return_content: true
+          register: health
+          until: health.status == 200
+          retries: 30
+          delay: 5
+
+        - name: Score a test post
+          ansible.builtin.uri:
+            url: "http://localhost:{{ port }}/predict"
+            method: POST
+            body_format: json
+            body:
+              posts:
+                - title: "I used to hate facial hair"
+                  body: "but then it grew on me."
+            return_content: true
+          register: smoke
+
+        - name: Check the answer
+          ansible.builtin.assert:
+            that:
+              - smoke.json.predictions | length == 1
+              - smoke.json.predictions[0].score is number
+            fail_msg: "/predict answered {{ smoke.content }}"
+
+        - name: Show what is serving
+          ansible.builtin.debug:
+            msg: "health {{ health.json }}; test post {{ smoke.json }}"
+      rescue:
+        - name: Show the container log
+          ansible.builtin.command: docker logs --tail 100 {{ container }}
+          changed_when: false
+          failed_when: false
+
+        - name: Fail the deploy
+          ansible.builtin.fail:
+            msg: "The server didn't come up; see the container log above."

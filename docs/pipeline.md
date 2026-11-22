@@ -1,6 +1,7 @@
 # CI/CD pipeline
 
-Branch flow: feature branch → `dev` → `release` → automatic deploy. A model is trained once and then only scored.
+Branch flow: feature branch → `dev` → `release` (staging on VCL) → `main` (production on Kubernetes, not built yet).
+A model is trained once and then only scored.
 
 1. **Experiment, on a feature branch:** push `experiments/<name>.yaml`. `experiment` trains each listed run on a
    VCL GPU, scores it on validation, stores the weights on Hugging Face and posts a table on the PR.
@@ -8,10 +9,12 @@ Branch flow: feature branch → `dev` → `release` → automatic deploy. A mode
 3. **Pull request into `dev`:** CI (Ruff, pytest) must pass. Dataset validation runs when dataset code changes.
    Merging uses no GPU and trains nothing.
 4. **Pull request `dev` → `release`:** `release-check` downloads the `candidate.yaml` folder at a pinned Hugging Face
-   revision and scores it and the deployed champion on the same test data. It blocks the merge if the candidate is
-   worse. Nothing is trained.
-5. **Push to `release`** (the merge): `deploy` ships exactly the revision the check scored and makes it the
-   champion.
+   revision and scores it and the model on staging (the latest `rc-<n>`) on the same test data. It blocks the merge
+   if the candidate is worse. Nothing is trained.
+5. **Push to `release`** (the merge): `deploy` serves exactly the revision the check scored on the VCL staging
+   instance and publishes the pre-release `rc-<n>` (see "Staging"). It does not make the model the champion.
+6. **Push to `main`** (planned, issue #22): deploy the staged image to production on Kubernetes, publish
+   `model-<n>` and promote it on Hugging Face as the champion. The cluster isn't chosen and nothing is built yet.
 
 `train-eval` (retrain `pipeline/train.py`'s model) is now manual only. How to name, change and ship a model:
 `.claude/skills/model-release/SKILL.md`.
@@ -21,11 +24,11 @@ Branch flow: feature branch → `dev` → `release` → automatic deploy. A mode
 | `ci.yml` | pull request into `dev`; manual | GitHub-hosted | Ruff, pytest. Required on `dev`. |
 | `data-validation.yml` | pull request into `dev` that changes dataset code; Hugging Face webhook relay; manual | GitHub-hosted | validates the dataset |
 | `train-eval.yml` | manual only (`smoke: true` only checks VCL access) | hosted + self-hosted controller | retrains `pipeline/train.py`'s model on a VCL GPU, scores it and the champion, uploads it to `models/<name>/`, gates (advisory) |
-| `release-check.yml` | pull request from `dev` into `release` (`pull_request_target`) | hosted + self-hosted controller | scores the `candidate.yaml` model and the champion on test on a VCL GPU, no training; uploads `release-<head sha>` on a pass. Job `trained-candidate` is required on `release`. |
+| `release-check.yml` | pull request from `dev` into `release` (`pull_request_target`) | hosted + self-hosted controller | scores the `candidate.yaml` model and the baseline (the latest `rc-<n>`, else the champion) on test on a VCL GPU, no training; uploads `release-<head sha>` on a pass. Job `trained-candidate` is required on `release`. |
 | `train-eval-modal.yml` | manual only | GitHub-hosted | fallback: trains and evaluates on a Modal GPU, gates (see "Modal fallback") |
 | `experiment.yml` | push to a feature branch that changes `experiments/*.yaml`; manual (`-f config=...`) | hosted + self-hosted controller | runs every listed research run on a VCL L40S, validation only; stores each on HF; posts a table on the PR (see "Experiments"). Advisory, never blocks. |
 | `vcl-cleanup.yml` | every 30 minutes; manual | self-hosted controller | ends reservations that a pipeline job recorded but couldn't end (`scripts/vcl_ledger.py`) |
-| `deploy.yml` | push to `release` | GitHub-hosted | downloads the weights at the revision `release-check` scored, builds the inference image, deploys, publishes release `model-<n>`, promotes the champion |
+| `deploy.yml` | push to `release` | hosted + self-hosted controller | downloads the weights at the revision `release-check` scored, builds the CPU inference image, serves it on a VCL `cpu-staging` instance and checks it answers, publishes the pre-release `rc-<n>` with `release.json` (see "Staging"). No promotion. |
 
 ## Runners
 
@@ -55,13 +58,13 @@ Stored in GitHub, never in the repo. Locally, `HF_TOKEN` goes in `.env` (ignored
 |---|---|---|---|
 | `GITHUB_TOKEN` | automatic | all | GHCR push and pull, releases, artifact download. Nothing to set. |
 | `HF_TOKEN` | repository | data validation, train-eval, train-eval-modal, deploy | Hugging Face read/write token: reads the dataset, writes `zachnorton03/reddit-post-predictor-models`. Must be a repository secret (not an environment secret): the jobs that use it run in other environments or none. |
-| `VCL_TOKEN` | environment `vcl` | train-eval | VCL API token (vcl.ncsu.edu → Manage → User Preferences → Manage Tokens) |
-| `VCL_SSH_KEY` | environment `vcl` | train-eval | private key Ansible uses to reach the GPU instance |
+| `VCL_TOKEN` | environment `vcl` | train-eval, release-check, experiment, deploy | VCL API token (vcl.ncsu.edu → Manage → User Preferences → Manage Tokens) |
+| `VCL_SSH_KEY` | environment `vcl` | train-eval, release-check, experiment, deploy | private key Ansible uses to reach the GPU instance |
 | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | environment `modal` | train-eval-modal | Modal API token (`modal token new`). Only needed if the fallback is used. |
-| `PROD_SSH_KEY`, `KUBECONFIG_DATA` | environment `production` | deploy | placeholders for the production deployment |
+| `PROD_SSH_KEY`, `KUBECONFIG_DATA` | environment `production` | nothing yet | placeholders for a production deployment; staging uses the `vcl` secrets |
 
 Environments: `vcl` (no reviewers, so runs are not blocked) and `production` (deployment branch: `release`
-only; optionally a required reviewer).
+only; optionally a required reviewer). `production` is not used yet: `deploy` stages on VCL with the `vcl` secrets.
 
 One-time setup (repo admin):
 
@@ -91,11 +94,19 @@ Files marked *(exists)* are in the repo; the rest do not exist yet. Each owner c
 | `pipeline/train.py` | `--dataset <repo> --revision <sha> --out <dir>`; writes the model to `<dir>` with `<dir>/model.json`: `name` (the hand-set `MODEL_NAME`, format in the model-release skill), `type`, and anything the loader needs |
 | `pipeline/evaluate.py` | `--model <dir> --dataset <repo> --revision <sha> --out <file>`; loads any past model by its `model.json` `type` (`minilm`, `prototype`); scores every subreddit's test split (`--split val` for validation, up to 40,000 posts each) and writes JSON with the macro averages `pr_auc`, `top10_hit_rate` and `spearman` (each subreddit with 1,000+ posts counts once), `by_subreddit`, and `rows` (hash of the scored post ids). Set `EVAL_CACHE` to share the labeled splits between containers |
 | `candidate.yaml` *(exists)* | `path` (HF folder with the weights), `name`, `type`. Checked by `scripts/hf_models.py candidate` |
-| `infra/ansible/gate.yml` *(exists)* | on the instance: downloads the candidate (`hf_models.py fetch`) and the champion, runs `pipeline.evaluate` on both, copies `metrics.json` and `champion_metrics.json` to `{{ results_dir }}`. Extra vars: `image`, `dataset`, `revision`, `candidate_path`, `candidate_revision`, `candidate_name`, `candidate_type`, `results_dir` |
-| `docker/serve.Dockerfile` | inference image; `COPY model/` from the build context (the scored weights, with `model.json`) |
-| `infra/deploy/deploy.sh <image>` | deploys the image to production |
+| `infra/ansible/gate.yml` *(exists)* | on the instance: downloads the candidate (`hf_models.py fetch`) and the champion, runs `pipeline.evaluate` on both, copies `metrics.json` and `champion_metrics.json` to `{{ results_dir }}`. Extra vars: `image`, `dataset`, `revision`, `candidate_path`, `candidate_revision`, `candidate_name`, `candidate_type`, `results_dir`, and optional `baseline_path`, `baseline_revision`, `baseline_name`, `baseline_type` (downloaded instead of the champion; scored into `champion_metrics.json` either way) |
+| `docker/serve.Dockerfile` *(exists)* | CPU inference image; `COPY model/` from the build context (the scored weights, with `model.json`) to `/model`; build arg `MODEL_VERSION`; loads and scores one post at build (`python -m pipeline.serve --check /model`); serves on port 8000 |
+| `pipeline/serve.py` *(exists)* | `GET /health`, `POST /predict` `{"posts": [{"title", "body"}]}` → `{"predictions": [{"score"}]}`; serves the `model.json` types in `PREDICTORS` (`minilm`) |
+| `infra/ansible/staging.yml` *(exists)* | on the `vcl` inventory group: installs Docker if needed, pulls `{{ image }}` with `$GHCR_USER`/`$GHCR_TOKEN`, runs it as container `serve` on port 8000 with `--restart unless-stopped`, checks `/health` and `/predict`. Extra vars: `image`, optional `port` |
+| `scripts/release_version.py` *(exists)* | `next <prefix> <commit>` prints the next `<prefix>-<n>` from the git tags, or the one already at `<commit>`; `latest <prefix>` prints the highest existing one |
+| `scripts/vcl_staging.py` *(exists)* | `current` prints the live staging request id; `record <image> <version>` makes `.vcl_state.json` the staging reservation (`~/.vcl-pipeline/staging.json`) |
 
-The gate (`scripts/compare_metrics.py`) compares the candidate with the champion, both scored in the same run
+**The baseline.** `release-check` compares the candidate with the latest release candidate `rc-<n>`, the model on
+staging: it downloads `release.json` from that GitHub pre-release and passes its HF `path`, `revision`, `name` and
+`type` to `gate.yml`. Each release is therefore gated against the one before it. With no `rc-<n>` yet it falls back
+to the production champion (`champion.json`), and with neither it passes. `release.json` records which (`baseline`).
+
+The gate (`scripts/compare_metrics.py`) compares the candidate with the baseline, both scored in the same run
 by the same `evaluate.py` on the same test data. It fails if the two `rows` hashes differ (different posts). It fails if the macro `pr_auc` or `top10_hit_rate` drops more than 0.01. It warns (does not fail) when one
 subreddit's `pr_auc` drops more than 0.03.
 With no champion yet, it passes. The gate checks "not worse", not "better": 0.01 is near the noise on the test
@@ -112,7 +123,8 @@ Models live in the Hugging Face repo `zachnorton03/reddit-post-predictor-models`
 - `candidate.yaml` names one such folder (`models/<name>/model` for a train-eval run). `release-check` pins the
   repo's commit when it starts and scores the folder at that commit. `release.json` in its artifact records the
   commit as `revision`.
-- Deploy downloads the folder at that `revision`, so it ships exactly what was scored. `promote` then adds
+- The staging deploy downloads the folder at that `revision`, so it ships exactly what was scored. It doesn't
+  promote. The production deploy (planned) will run `promote`, which adds
   `release.json` (and `model.json`, which experiment runs lack) next to the weights, checks that the weights there
   are unchanged from `revision`, tags that commit `model-<n>` and points `champion.json` at it
   (`{version, name, type, path, commit, revision}`). `model-<n>` matches the GitHub release `model-<n>`.
@@ -168,6 +180,47 @@ crashes mid-job, that step can't run. So jobs record each reservation in a ledge
 (`~/.vcl-pipeline/`, `scripts/vcl_ledger.py`), and `vcl-cleanup.yml` ends any recorded reservation whose workflow run
 has finished. Reservations made by hand aren't in the ledger and are never touched. `train-eval` also reserves
 only 240 minutes and `release-check` 120, matching their timeouts.
+
+## Staging
+
+`deploy` serves each release on a VCL CPU instance (profile `cpu-staging`: image 7392, "Ubuntu 22.04 - 16 cores
+128 GB RAM", 240 minutes). The shipped MiniLM needs no GPU.
+
+1. `build` (hosted) fetches the scored weights into `model/` and builds `docker/serve.Dockerfile` (CPU torch, model
+   baked in, no network needed at start). It pushes `ghcr.io/<repo>/serve:sha-<release commit>` (the tag
+   production will deploy, so it ships the bytes staging tested), `:rc-<n>` and `:staging`. It adds `serve_image`,
+   `rc` and `release_commit` to `release.json`.
+2. `deploy-staging` runs on the self-hosted controller, because VCL opens an instance's firewall only to the IP
+   that asked for it (a hosted runner's IP changes every run). It reserves a new `cpu-staging` instance, runs
+   `infra/ansible/staging.yml` and checks `/health` and `/predict` on the instance.
+3. Only after that passes does it record the new reservation as staging and end the previous one. If anything
+   fails, it ends the new reservation and the previous staging keeps serving, and `record` doesn't run.
+4. `record` publishes the GitHub pre-release `rc-<n>` at the `release` commit, with `release.json` attached (a
+   release asset doesn't expire like the 90-day workflow artifact). It doesn't touch Hugging Face.
+
+`rc-<n>` counts up from the existing `rc-*` tags (`scripts/release_version.py`). A failed deploy makes no tag, so it
+leaves no gap, and a re-run of the same commit reuses its number. The next `release-check` gates against the
+latest `rc-<n>` (see "The baseline" above), so the gate works before production exists.
+
+Staging lasts until its reservation ends; the next deploy replaces it. It is recorded in
+`~/.vcl-pipeline/staging.json`, not in the cleanup ledger, so `vcl-cleanup` leaves it alone. While the deploy job
+runs, the new reservation is in the ledger, so a crashed job doesn't leak it.
+
+**Reaching it.** Only the controller can reach the instance. The job summary prints the IP and a tunnel command:
+
+```sh
+ssh -J <you>@<controller> -p 22 -L 8000:localhost:8000 <vcl user>@<staging ip>   # needs the VCL SSH key
+curl localhost:8000/health
+curl -X POST localhost:8000/predict -H 'Content-Type: application/json'   -d '{"posts": [{"title": "I used to hate facial hair", "body": "but then it grew on me."}]}'
+```
+
+`score` is the predicted engagement, `log1p(score) + log1p(num_comments)`. Rank posts by it; it is not a
+probability. The server builds the text as training did (body cut at EDIT markers, then to 1,000 characters).
+Only the `minilm` type can be served: `prototype` runs also read posting-time metadata (such as the author's
+history) that a request doesn't carry, so `pipeline/serve.py` refuses them at start and the image build fails.
+
+Locally: `python scripts/hf_models.py fetch <path> <revision> model --name <name> --type <type>`, then
+`docker build -f docker/serve.Dockerfile -t serve . && docker run -p 8000:8000 serve`.
 
 ## Modal fallback
 

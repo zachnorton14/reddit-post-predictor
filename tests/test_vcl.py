@@ -218,6 +218,7 @@ class ConfigTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"VCL_ENV_FILE": ""}):
             envs = load_environments(Path(cli.__file__).with_name("environments.yaml"))
         self.assertIn("gpu-train", envs)
+        self.assertIn("cpu-staging", envs)
 
     def test_valid(self):
         envs = load_environments(self.write("environments:\n  a: {image: 5, length_minutes: 30}\n"))

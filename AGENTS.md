@@ -32,7 +32,8 @@ pip install -r requirements-ci.txt     # lint and tests only (what CI installs, 
 
 ## Branches and pull requests
 
-Flow: feature branch → `dev` → `release` (deploys). `dev` is the default branch.
+Flow: feature branch → `dev` → `release` (staging on VCL) → `main` (production, not built yet). `dev` is the default
+branch.
 
 - Branch from `origin/dev`. Name it `<your name>/<topic>`, for example `owen/deberta-pipeline`.
 - Open the PR into `dev`. Never push directly to `dev` or `release`.
@@ -61,10 +62,12 @@ Nothing on the GPU. A model is trained once, in an experiment, and only scored a
 1. **Experiment** (feature branch): push `experiments/<name>.yaml`. Each run is trained on a VCL GPU, scored on
    validation and stored on Hugging Face. The PR gets a table (see "GPUs and compute").
 2. **Choose** on validation: set `candidate.yaml` to the run's folder (`path`), `name` and `type`. Merge into `dev`.
-3. **Release** (`dev` → `release` PR): `release-check` scores those saved weights and the deployed champion with
-   `pipeline/evaluate.py` on the same pinned test data. It fails if `pr_auc` or `top10_hit_rate` drops more than
-   0.01 below the champion's. It runs again on every push to `dev` while that PR is open, about 15–30 minutes each.
-4. **Deploy** (merge into `release`): ships exactly the revision that was scored.
+3. **Release** (`dev` → `release` PR): `release-check` scores those saved weights and the model on staging (the
+   latest `rc-<n>`, else the production champion) with `pipeline/evaluate.py` on the same pinned test data. It
+   fails if `pr_auc` or `top10_hit_rate` drops more than 0.01 below that baseline's. It runs again on every push to `dev` while that PR is open, about 15–30 minutes each.
+4. **Staging** (merge into `release`): serves exactly the revision that was scored on a VCL CPU instance and
+   publishes the pre-release `rc-<n>`. It doesn't make the model the champion.
+5. **Production** (merge into `main`, not built yet): will deploy the staged image to Kubernetes and promote it.
 
 `train-eval` (retrain `pipeline/train.py`'s model) is manual only. Use it to retrain that model, for example on new
 data.

@@ -1,9 +1,21 @@
-# Deploy the model that passed the release check when its pull request merges into `release`, then record it.
+# Deploy the model that passed the release check to staging when its pull request merges into `release`.
 #
 # The model is not retrained. release-check.yml scored the folder named in candidate.yaml at a pinned Hugging Face
 # revision and uploaded `release-<head commit>` (release.json). This workflow downloads exactly that revision, bakes
-# it into an inference image, deploys it, publishes a GitHub release `model-<n>`, and promotes it on Hugging Face
-# (release.json next to the weights, tag `model-<n>`, champion.json). The next release check scores against it.
+# it into an inference image, serves it on the VCL staging instance, and publishes a GitHub pre-release `rc-<n>`
+# with release.json attached.
+#
+# Staging does not make the model the champion. A push to `main` will deploy the same image (`serve:sha-<commit>`)
+# to production, publish `model-<n>` and promote it on Hugging Face (`scripts/hf_models.py promote`). That production
+# workflow is not built yet. release-check gates the next release against the latest rc-<n>, using the release.json
+# attached here.
+#
+#   build (hosted) ──► deploy-staging (self-hosted controller, VCL CPU instance) ──► record (hosted)
+#
+# Staging runs on the self-hosted controller because VCL opens an instance's firewall only to the IP that asked for
+# it. The job reserves a new `cpu-staging` instance, starts the image there, checks /health and /predict, and only
+# then ends the previous staging reservation. If anything fails, the new reservation is ended and the old staging
+# keeps serving. The new one is left running: staging lasts until its reservation ends (see docs/pipeline.md).
 name: deploy
 
 on:
@@ -22,17 +34,23 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}/serve
-  MODEL_VERSION: model-${{ github.run_number }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
     outputs:
       image: ${{ steps.push.outputs.image }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # the rc-<n> tags, for the next number
+      - name: Pick the release candidate version
+        id: version
+        run: |
+          version=$(python3 scripts/release_version.py next rc "${{ github.sha }}")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Release candidate: \`$version\`" >> "$GITHUB_STEP_SUMMARY"
       - name: Find the release check that passed for this merge
         id: run
         env:
@@ -65,51 +83,151 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/setup-buildx-action@v3
-      - name: Build and push the inference image (model baked in)
+      # serve:sha-<commit> is the tag production will deploy, so it ships the bytes staging tested.
+      - name: Build and push the inference image (model baked in, CPU)
         id: push
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          ref="${IMAGE,,}:$MODEL_VERSION"
-          docker buildx build -f docker/serve.Dockerfile --push -t "$ref" -t "${IMAGE,,}:latest" .
+          ref="${IMAGE,,}:sha-${{ github.sha }}"
+          docker buildx build -f docker/serve.Dockerfile --build-arg MODEL_VERSION="$VERSION" \
+            --push -t "$ref" -t "${IMAGE,,}:$VERSION" -t "${IMAGE,,}:staging" .
           echo "image=$ref" >> "$GITHUB_OUTPUT"
+      - name: Add the serve image and version to release.json
+        env:
+          SERVE_IMAGE: ${{ steps.push.outputs.image }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python3 - <<'EOF'
+          import json, os
+          from pathlib import Path
+          path = Path("release/release.json")
+          release = json.loads(path.read_text())
+          release.update(serve_image=os.environ["SERVE_IMAGE"], rc=os.environ["VERSION"], release_commit=os.environ["GITHUB_SHA"])
+          path.write_text(json.dumps(release, indent=2) + "\n")
+          EOF
       - uses: actions/upload-artifact@v4
         with:
           name: release
           path: release/
           retention-days: 90
 
-  deploy:
+  deploy-staging:
     needs: build
-    runs-on: ubuntu-latest
-    environment: production
+    runs-on: [self-hosted, Linux]
+    environment: vcl
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+    env:
+      VCL_TOKEN: ${{ secrets.VCL_TOKEN }}
+      # The staging instance pulls the serve image with this token, then logs out.
+      GHCR_USER: ${{ github.actor }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      IMAGE_REF: ${{ needs.build.outputs.image }}
+      VERSION: ${{ needs.build.outputs.version }}
+      ANSIBLE_HOST_KEY_CHECKING: "False"
     steps:
       - uses: actions/checkout@v5
-      - name: Deploy the inference image
-        env:
-          IMAGE_REF: ${{ needs.build.outputs.image }}
-          PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
-          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_DATA }}
-        run: infra/deploy/deploy.sh "$IMAGE_REF"
+      # The controller's system Python has no venv module; this needs no sudo on the host.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
+      - name: Set up tools
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -q -r vcl/requirements.txt ansible-core
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Find the current staging reservation
+        id: previous
+        run: echo "request_id=$(python scripts/vcl_staging.py current)" >> "$GITHUB_OUTPUT"
+
+      - name: Reserve a CPU staging instance
+        id: vcl
+        run: |
+          python -m vcl up cpu-staging --inventory vcl_inventory.ini
+          # Until this job hands it over to staging, the cleanup sweep ends it if the job dies.
+          python scripts/vcl_ledger.py add
+
+      - name: Write the SSH key
+        env:
+          VCL_SSH_KEY: ${{ secrets.VCL_SSH_KEY }}
+        run: |
+          key="$RUNNER_TEMP/vcl_key" && printf '%s\n' "$VCL_SSH_KEY" > "$key" && chmod 600 "$key"
+          echo "KEY=$key" >> "$GITHUB_ENV"
+
+      - name: Start the inference image and check that it answers
+        run: ansible-playbook -i vcl_inventory.ini --private-key "$KEY" infra/ansible/staging.yml -e image="$IMAGE_REF"
+
+      - name: Make it staging and end the previous staging reservation
+        env:
+          PREVIOUS: ${{ steps.previous.outputs.request_id }}
+        run: |
+          id=$(python -c "import json; print(json.load(open('.vcl_state.json'))['request_id'])")
+          python scripts/vcl_staging.py record "$IMAGE_REF" "$VERSION"
+          python scripts/vcl_ledger.py remove "$id"
+          rm -f .vcl_state.json
+          if [ -n "$PREVIOUS" ] && [ "$PREVIOUS" != "$id" ]; then
+            # It may have expired already; ending an ended reservation is not an error.
+            python -m vcl down "$PREVIOUS" || echo "::warning::Couldn't end the previous staging reservation $PREVIOUS"
+          fi
+
+      - name: End the new reservation if the deploy failed
+        if: failure()
+        run: |
+          if [ -f .vcl_state.json ]; then
+            id=$(python -c "import json; print(json.load(open('.vcl_state.json'))['request_id'])")
+            python -m vcl down && python scripts/vcl_ledger.py remove "$id"
+          fi
+
+      - name: Clean up
+        if: always()
+        run: rm -f vcl_inventory.ini .vcl_state.json "$KEY"
+
+      - name: How to reach staging
+        env:
+          IP: ${{ steps.vcl.outputs.ip }}
+          SSH_USER: ${{ steps.vcl.outputs.user }}
+          SSH_PORT: ${{ steps.vcl.outputs.port }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ### Staging: \`$VERSION\`
+
+          Image \`$IMAGE_REF\` on VCL \`cpu-staging\` at \`$IP\`. It serves until the reservation ends.
+          VCL lets only the controller reach it, so tunnel through the controller:
+
+          \`\`\`sh
+          ssh -J <you>@<controller> -p $SSH_PORT -L 8000:localhost:8000 $SSH_USER@$IP
+          curl localhost:8000/health
+          curl -X POST localhost:8000/predict -H 'Content-Type: application/json' \\
+            -d '{"posts": [{"title": "I used to hate facial hair", "body": "but then it grew on me."}]}'
+          \`\`\`
+          EOF
+
+  # A pre-release, not a model release: the model is only staged. release.json is attached so the production
+  # deploy can find it later (a release asset doesn't expire like a workflow artifact). No Hugging Face promotion.
   record:
-    needs: [build, deploy]
+    needs: [build, deploy-staging]
     runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with:
           name: release
           path: release
-      - name: Publish the model release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the release candidate
         run: |
-          gh release create "$MODEL_VERSION" release/release.json \
-            --repo "${{ github.repository }}" --target "${{ github.sha }}" \
-            --title "$MODEL_VERSION" \
-            --notes "Image: ${{ needs.build.outputs.image }}"$'\n\n'"$(cat release/release.json)"
-      - name: Promote the model on Hugging Face (release.json, tag and champion.json)
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          pip install -q "huggingface_hub>=0.25"
-          python scripts/hf_models.py promote release/release.json "$MODEL_VERSION"
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            # A re-run of this deploy: same commit, same version (scripts/release_version.py).
+            gh release upload "$VERSION" release/release.json --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$VERSION" release/release.json \
+              --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+              --title "$VERSION (staging)" \
+              --notes "Staged on VCL. Image: \`${{ needs.build.outputs.image }}\`"$'\n\n```json\n'"$(cat release/release.json)"$'\n```'
+          fi
