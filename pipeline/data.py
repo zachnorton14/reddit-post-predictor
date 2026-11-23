@@ -42,28 +42,29 @@ def load_pinned(dataset, revision, subreddit="dadjokes", body_chars=1000, *, val
     return dm.load(cfg, source=f"{root}/data/{subreddit}/*/*.parquet")
 
 
-def eval_cache_key(dataset, revision, body_chars, per_sub, validation_only=False):
+def eval_cache_key(dataset, revision, body_chars, per_sub, validation_only=False, train_per_sub=1):
     """Names the cached eval splits: the pinned revision, the settings and the code that labels them."""
     code = b"".join(Path(m.__file__).read_bytes() for m in (td, tb, dm)) + Path(__file__).read_bytes()
-    parts = f"{dataset}@{revision}|{body_chars}|{per_sub}|{validation_only}|".encode() + code
+    parts = f"{dataset}@{revision}|{body_chars}|{per_sub}|{validation_only}|{train_per_sub}|".encode() + code
     return hashlib.sha256(parts).hexdigest()[:20]
 
 
-def load_eval(dataset, revision, body_chars=1000, per_sub=EVAL_PER_SUB, *, validation_only=False):
+def load_eval(dataset, revision, body_chars=1000, per_sub=EVAL_PER_SUB, *, validation_only=False, train_per_sub=1):
     """Validation and test posts of every subreddit in the revision, for scoring (`subreddit` column says which).
 
     Labels are computed on all posts of a subreddit and quarter before sampling, so the sample doesn't move the
-    top-10% threshold. Train is left nearly empty: scoring never needs it. With `validation_only`, only pre-test
-    shards are downloaded and opened, and test is empty.
+    top-10% threshold. Train keeps `train_per_sub` posts per subreddit (1 for scoring, which never needs it; more
+    for runners that train on every subreddit). With `validation_only`, only pre-test shards are downloaded and
+    opened, and test is empty.
 
     Labeling every post takes a long time (AskReddit is most of the 2.9 GB), so the splits are saved in $EVAL_CACHE
     (default data/eval_cache) under eval_cache_key: a new revision, setting or labeling code gets a new file.
     """
     cfg = dm.Config()
     tcfg = tb.Config(source="", train_end=cfg.train_end, val_end=cfg.val_end, body_chars=body_chars,
-                     max_train_per_sub=1, max_eval_per_sub=per_sub)
+                     max_train_per_sub=train_per_sub, max_eval_per_sub=per_sub)
     path = Path(os.environ.get("EVAL_CACHE", ROOT / "data/eval_cache")) / \
-        f"{eval_cache_key(dataset, revision, body_chars, per_sub, validation_only)}.parquet"
+        f"{eval_cache_key(dataset, revision, body_chars, per_sub, validation_only, train_per_sub)}.parquet"
     if not path.exists():
         patterns = pre_test_patterns() if validation_only else ["data/*/*/*.parquet"]
         root = Path(snapshot_download(dataset, repo_type="dataset", revision=revision, allow_patterns=patterns))
