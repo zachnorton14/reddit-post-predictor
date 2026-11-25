@@ -9,5 +9,7 @@ scikit-learn>=1.5
 scipy
 fastapi
 httpx
+jinja2  # renders infra/k8s/serve.yaml.j2 in tests/test_k8s_manifest.py, as Ansible does
+pyyaml
 pytest
 ruff

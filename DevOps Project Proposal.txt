@@ -23,6 +23,7 @@ Areas of Depth:
    * Run integration tests, benchmark inference latency, validate model artifacts, compare candidate performance against production, and simulate A/B traffic before promotion.
 * Cooper: Manage deployments to live production inference instance using Kubernetes
    * The pipeline described above trains, evaluates, and deploys the model as a dev release on one VCL instance. In a real production system, we would have a live deployment of the model on a production server. My area of depth will simulate this by using an extension of our CI/CD pipeline to deploy production-ready models to a Kubernetes cluster that will act as our production deployment.
+   * Implementation: on a push to main, the image tested on staging is rolled out to a k3s cluster that Ansible sets up on a VCL CPU instance. Production is not kept running permanently: the pipeline reserves the instance when it needs it, and for the demo it is provisioned ahead of time so it behaves like a live deployment. Every rollout runs under nonstop traffic and fails if any request fails; a failed rollout is rolled back automatically. A separate drill workflow simulates a bad release and a rollback on the live cluster and reports that no request failed.
 
 
 Diagram:

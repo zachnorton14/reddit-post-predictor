@@ -1,6 +1,6 @@
 # CI/CD pipeline
 
-Branch flow: feature branch → `dev` → `release` (staging on VCL) → `main` (production on Kubernetes, not built yet).
+Branch flow: feature branch → `dev` → `release` (staging on VCL) → `main` (production on Kubernetes on VCL).
 A model is trained once and then only scored.
 
 1. **Experiment, on a feature branch:** push `experiments/<name>.yaml`. `experiment` trains each listed run on a
@@ -13,8 +13,10 @@ A model is trained once and then only scored.
    if the candidate is worse. Nothing is trained.
 5. **Push to `release`** (the merge): `deploy` serves exactly the revision the check scored on the VCL staging
    instance and publishes the pre-release `rc-<n>` (see "Staging"). It does not make the model the champion.
-6. **Push to `main`** (planned, issue #22): deploy the staged image to production on Kubernetes, publish
-   `model-<n>` and promote it on Hugging Face as the champion. The cluster isn't chosen and nothing is built yet.
+6. **Push to `main`** (the `release` → `main` merge): `deploy-production` rolls the staged image out to the k3s
+   cluster on the production VCL instance under nonstop traffic, rolls back on its own if anything fails, and only
+   after a rollout with zero failed requests tags the image `model-<n>`, promotes it on Hugging Face as the champion
+   and publishes `model-<n>` (see "Production").
 
 `train-eval` (retrain `pipeline/train.py`'s model) is now manual only. How to name, change and ship a model:
 `.claude/skills/model-release/SKILL.md`.
@@ -29,6 +31,10 @@ A model is trained once and then only scored.
 | `experiment.yml` | push to a feature branch that changes `experiments/*.yaml`; manual (`-f config=...`) | hosted + self-hosted controller | runs every listed research run on a VCL L40S, validation only; stores each on HF; posts a table on the PR (see "Experiments"). Advisory, never blocks. |
 | `vcl-cleanup.yml` | every 30 minutes; manual | self-hosted controller | ends reservations that a pipeline job recorded but couldn't end (`scripts/vcl_ledger.py`) |
 | `deploy.yml` | push to `release` | hosted + self-hosted controller | downloads the weights at the revision `release-check` scored, builds the CPU inference image, serves it on a VCL `cpu-staging` instance and checks it answers, publishes the pre-release `rc-<n>` with `release.json` (see "Staging"). No promotion. |
+| `deploy-production.yml` | push to `main`; manual | hosted + self-hosted controller | finds the `rc-<n>` staged at the merged release commit, rolls its image out to k3s on the VCL `cpu-production` instance under traffic (`production-rollout.yml`), then tags `serve:model-<n>`, promotes on HF and publishes `model-<n>` (see "Production") |
+| `production-provision.yml` | manual | hosted + self-hosted controller | brings production up with the current champion ahead of a demo; promotes nothing |
+| `rollback-drill.yml` | manual (`scenario`: `broken-release`, `undo-last-release`) | self-hosted controller | on the live production cluster, under traffic: a release whose model doesn't load is rolled back automatically, or the last release is undone; passes only with zero failed requests |
+| `production-rollout.yml` | called by the three above | self-hosted controller | one monitored change to production: reuse or reserve the instance, `infra/ansible/production.yml`, record it, judge the traffic report |
 
 ## Runners
 
@@ -58,13 +64,14 @@ Stored in GitHub, never in the repo. Locally, `HF_TOKEN` goes in `.env` (ignored
 |---|---|---|---|
 | `GITHUB_TOKEN` | automatic | all | GHCR push and pull, releases, artifact download. Nothing to set. |
 | `HF_TOKEN` | repository | data validation, train-eval, train-eval-modal, deploy | Hugging Face read/write token: reads the dataset, writes `zachnorton03/reddit-post-predictor-models`. Must be a repository secret (not an environment secret): the jobs that use it run in other environments or none. |
-| `VCL_TOKEN` | environment `vcl` | train-eval, release-check, experiment, deploy | VCL API token (vcl.ncsu.edu → Manage → User Preferences → Manage Tokens) |
-| `VCL_SSH_KEY` | environment `vcl` | train-eval, release-check, experiment, deploy | private key Ansible uses to reach the GPU instance |
+| `VCL_TOKEN` | environments `vcl` and `production` | train-eval, release-check, experiment, deploy; production-rollout | VCL API token (vcl.ncsu.edu → Manage → User Preferences → Manage Tokens) |
+| `VCL_SSH_KEY` | environments `vcl` and `production` | train-eval, release-check, experiment, deploy; production-rollout | private key Ansible uses to reach the VCL instance |
 | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | environment `modal` | train-eval-modal | Modal API token (`modal token new`). Only needed if the fallback is used. |
-| `PROD_SSH_KEY`, `KUBECONFIG_DATA` | environment `production` | nothing yet | placeholders for a production deployment; staging uses the `vcl` secrets |
 
-Environments: `vcl` (no reviewers, so runs are not blocked) and `production` (deployment branch: `release`
-only; optionally a required reviewer). `production` is not used yet: `deploy` stages on VCL with the `vcl` secrets.
+Environments: `vcl` (no reviewers, so runs are not blocked) and `production` (deployment branch: `main` only;
+optionally a required reviewer, which then also gates the provision and drill runs). The production jobs run in
+`production`, so it needs its own copy of the two VCL secrets. The cluster needs no credential in GitHub: the
+playbook runs `kubectl` on the instance over SSH.
 
 One-time setup (repo admin):
 
@@ -72,15 +79,20 @@ One-time setup (repo admin):
 gh api -X PUT repos/zachnorton14/reddit-post-predictor/environments/vcl
 gh api -X PUT repos/zachnorton14/reddit-post-predictor/environments/production \
   -F 'deployment_branch_policy[protected_branches]=false' -F 'deployment_branch_policy[custom_branch_policies]=true'
-gh api -X POST repos/zachnorton14/reddit-post-predictor/environments/production/deployment-branch-policies -f name=release
+gh api -X POST repos/zachnorton14/reddit-post-predictor/environments/production/deployment-branch-policies -f name=main
 
 gh secret set HF_TOKEN                        # prompts for the value
 gh secret set VCL_TOKEN --env vcl
 gh secret set VCL_SSH_KEY --env vcl < ~/.ssh/id_vcl
+gh secret set VCL_TOKEN --env production
+gh secret set VCL_SSH_KEY --env production < ~/.ssh/id_vcl
 ```
 
+If `production` already allows `release`, delete that policy (`gh api repos/.../environments/production/deployment-branch-policies`
+lists them) and add `main`. `production-provision` and `rollback-drill` must then also be run from `main`.
+
 Branch protection: on `dev` require `lint-test` (CI); on `release` require `trained-candidate`
-(release-check).
+(release-check); on `main` require a pull request (from `release`).
 
 ## Contracts the workflows rely on
 
@@ -99,7 +111,10 @@ Files marked *(exists)* are in the repo; the rest do not exist yet. Each owner c
 | `pipeline/serve.py` *(exists)* | `GET /health`, `POST /predict` `{"posts": [{"title", "body"}]}` → `{"predictions": [{"score"}]}`; serves the `model.json` types in `PREDICTORS` (`minilm`) |
 | `infra/ansible/staging.yml` *(exists)* | on the `vcl` inventory group: installs Docker if needed, pulls `{{ image }}` with `$GHCR_USER`/`$GHCR_TOKEN`, runs it as container `serve` on port 8000 with `--restart unless-stopped`, checks `/health` and `/predict`. Extra vars: `image`, optional `port` |
 | `scripts/release_version.py` *(exists)* | `next <prefix> <commit>` prints the next `<prefix>-<n>` from the git tags, or the one already at `<commit>`; `latest <prefix>` prints the highest existing one |
-| `scripts/vcl_staging.py` *(exists)* | `current` prints the live staging request id; `record <image> <version>` makes `.vcl_state.json` the staging reservation (`~/.vcl-pipeline/staging.json`) |
+| `scripts/vcl_staging.py` *(exists)* | `current [--role R]` prints the recorded request id; `live [--role R]` prints it only while VCL reports it `ready`; `record <image> <version> [--role R]` makes `.vcl_state.json` that role's reservation (`~/.vcl-pipeline/<role>.json`). `R` is `staging` (default) or `production` |
+| `infra/ansible/production.yml` *(exists)* | needs passwordless sudo; on the `vcl` group: installs k3s (pinned, no traefik) if needed; pulls the images into containerd with `$GHCR_USER`/`$GHCR_TOKEN`; seeds a fresh cluster with `seed_image`; starts `scripts/probe.py run` on the instance, applies `infra/k8s/serve.yaml.j2` (or `rollout undo`), waits, checks `/health` reports `version` and `/predict` answers, else `rollout undo`; writes `probe.json` and `rollout.json` to `{{ report_dir }}` on the controller. Doesn't fail on a rollback. Extra vars: `mode` (`deploy`/`undo`), `image`, `version`, optional `seed_image`, `seed_version`, `break_model`, and `report_dir`; leave unused ones out rather than empty |
+| `infra/k8s/serve.yaml.j2` *(exists)* | namespace `prod`; Deployment `serve` (3 replicas, `maxUnavailable: 0`, `/health` startup/readiness/liveness probes, `preStop` sleep, `MODEL_VERSION` set to the production version, `imagePullPolicy: IfNotPresent`); NodePort Service on 8000 → 30080. Vars: `serve_image`, `serve_version`, optional `serve_break`, `replicas`, `node_port`, `progress_deadline` |
+| `scripts/probe.py` *(exists)* | stdlib only. `run --url --out --stop-file` sends alternating `/health` and `/predict` until the stop file appears; `report <probe.json> <rollout.json> --expect rollout\|rollback` prints the Markdown report and exits 1 on any failed request, a wrong rollback outcome or a wrong final version; `undo-target` picks the revision to undo to |
 
 **The baseline.** `release-check` compares the candidate with the latest release candidate `rc-<n>`, the model on
 staging: it downloads `release.json` from that GitHub pre-release and passes its HF `path`, `revision`, `name` and
@@ -124,7 +139,7 @@ Models live in the Hugging Face repo `zachnorton03/reddit-post-predictor-models`
   repo's commit when it starts and scores the folder at that commit. `release.json` in its artifact records the
   commit as `revision`.
 - The staging deploy downloads the folder at that `revision`, so it ships exactly what was scored. It doesn't
-  promote. The production deploy (planned) will run `promote`, which adds
+  promote. The production deploy runs `promote` (after a rollout with zero failed requests), which adds
   `release.json` (and `model.json`, which experiment runs lack) next to the weights, checks that the weights there
   are unchanged from `revision`, tags that commit `model-<n>` and points `champion.json` at it
   (`{version, name, type, path, commit, revision}`). `model-<n>` matches the GitHub release `model-<n>`.
@@ -221,6 +236,66 @@ history) that a request doesn't carry, so `pipeline/serve.py` refuses them at st
 
 Locally: `python scripts/hf_models.py fetch <path> <revision> model --name <name> --type <type>`, then
 `docker build -f docker/serve.Dockerfile -t serve . && docker run -p 8000:8000 serve`.
+
+## Production
+
+Production is a single-node k3s cluster on one VCL CPU instance (profile `cpu-production`: the staging image, 16
+cores, 128 GB, 600 minutes, the student cap). It isn't permanent: the pipeline reserves it when it needs it and keeps
+it until the reservation ends, and for a demo it is brought up ahead of time so it looks like it has been running.
+
+**A deploy** (`deploy-production.yml`, on the `release` → `main` merge):
+
+1. `resolve` (hosted) finds the merged pull request's head (the `release` commit), the `rc-<n>` tag at it and that
+   pre-release's `release.json`. The image is its `serve_image`, `serve:sha-<release commit>`: the bytes staging
+   tested; nothing is rebuilt. It fails if the commit was never staged. The version is the next `model-<n>`
+   (`scripts/release_version.py next model`). The seed is the current champion's image (the latest `model-<n>`).
+2. `rollout` (`production-rollout.yml` on the controller) reuses the production reservation if VCL still reports it
+   ready (`scripts/vcl_staging.py live --role production`), otherwise reserves a new one (a cold start). It runs
+   `infra/ansible/production.yml`:
+   - installs k3s if needed and pulls the images into containerd with the run's GHCR token, so the cluster never
+     holds a registry credential (`imagePullPolicy: IfNotPresent`);
+   - on a fresh cluster, deploys the champion first, so the new release still arrives as a rolling update;
+   - starts `scripts/probe.py` on the instance, which sends an alternating `/health` and `/predict` every 0.1 s to the
+     Service and records each answer's version, applies the new release, and waits for the rollout;
+   - checks that `/health` reports the new version and `/predict` answers. If the new pods aren't Ready by the
+     progress deadline (180 s), or a check fails, it runs `kubectl rollout undo` on its own;
+   - copies `probe.json` and `rollout.json` back.
+
+   Whatever serves at the end is recorded as production (`~/.vcl-pipeline/production.json`), even after a rollback,
+   because it's a release that works. A new reservation is ended only if the playbook itself failed.
+3. `probe.py report --expect rollout` judges the run: any failed request, a rollback or a wrong final version fails
+   the job, and `record` doesn't run. The report (requests, failures, availability, longest outage, latency, and
+   which version answered when) is in the job summary and the `production-report` artifact.
+4. `record` (hosted) tags the image `serve:model-<n>` and `serve:production` (`docker buildx imagetools create`, no
+   rebuild), adds `model`, `production_commit` and `staged_as` to `release.json`, promotes it on Hugging Face
+   (`scripts/hf_models.py promote`) and publishes the GitHub release `model-<n>` with `release.json` and the report.
+
+**Why a rollout has no downtime** (`infra/k8s/serve.yaml.j2`): `maxUnavailable: 0` keeps the old pods until a new one
+is Ready; the readiness probe holds traffic until the model has loaded; the `preStop` sleep keeps a stopping pod
+serving while the Service drops it; and the progress deadline turns a release that never gets Ready into a failed
+rollout that can be undone. The probe runs on the instance, so it measures the Service, not the network from outside.
+
+**Before a demo**, run `production-provision` (less than 10 hours ahead; extend with `python -m vcl extend <minutes>
+<request id>` on the controller). It reserves or reuses production and serves the champion (or, before the first
+production release, the latest `rc-<n>`). It promotes nothing. Then a `release` → `main` merge rolls the new release
+onto it, and `rollback-drill` works on it.
+
+**Rollback drill** (`rollback-drill.yml`, manual, needs a live production; reserves nothing):
+
+- `broken-release` deploys the live image with no model (`serve_break`: `MODEL_DIR` points at an empty folder). The
+  one new pod never becomes Ready, so the old pods keep serving, the rollout passes its deadline and the playbook
+  rolls back. Passes only if it was rolled back, no request failed and the old version answers at the end.
+- `undo-last-release` undoes to the previous release under traffic (the newest earlier revision that the
+  broken-release drill didn't break: `probe.py undo-target`). Passes only with zero failed requests and the previous
+  version answering at the end. Production then serves that release until the next deploy; nothing is re-promoted.
+
+**Reaching it.** Only the controller can reach the instance. The job summary prints the IP, the Service address and
+a tunnel command (`ssh -J <you>@<controller> -p <port> -L 8000:<service ip>:8000 <vcl user>@<ip>`), then
+`curl localhost:8000/health`. On the instance: `k3s kubectl -n prod get pods`, `k3s kubectl -n prod rollout history
+deployment/serve` (the change cause is the version).
+
+**Limits.** One node, so no node-failure demo. A reservation that ends takes production with it; the next deploy
+cold-starts. If the VCL API can't be reached, `live` reports nothing and the deploy reserves a new instance.
 
 ## Modal fallback
 

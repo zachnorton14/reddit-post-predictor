@@ -1,0 +1,388 @@
+# Production on Kubernetes: install k3s on the VCL CPU instance, deploy the inference image, and roll out a new
+# release under nonstop traffic, rolling back automatically if it fails.
+#
+# Run by deploy-production.yml, production-provision.yml and rollback-drill.yml against the inventory that
+# `python -m vcl up cpu-production` writes (group `vcl`). Environment: GHCR_USER, GHCR_TOKEN (deploy mode only).
+# Uses only ansible-core modules. Needs passwordless sudo for the VCL user, like train.yml and staging.yml.
+#
+# Extra vars:
+#   mode          deploy (default): make `image` serve as `version`
+#                 undo: `kubectl rollout undo` to the previous release, under traffic (rollback-drill.yml)
+#   image, version          the release to deploy (deploy mode)
+#   seed_image, seed_version  optional: what production served before (the champion). Used only when nothing is
+#                 deployed yet (a fresh instance), so the new release still arrives as a rolling update
+#   break_model   true: deploy `image` with no model, so its pods never become Ready (rollback-drill.yml). With no
+#                 image given, it breaks the release that is live
+#   Leave unused vars out rather than passing them empty: extra vars can't be overridden by the playbook.
+#   report_dir    folder on the controller for probe.json and rollout.json (scripts/probe.py report reads both)
+#
+# Steps: install k3s if needed → pull the images into containerd → seed if nothing is deployed → start
+# scripts/probe.py on the instance → apply infra/k8s/serve.yaml.j2 (or undo) → wait for the rollout → check that
+# /health reports the new version and /predict answers → if anything failed, `kubectl rollout undo` → stop the probe
+# and copy the results back. A rollback doesn't fail the playbook: the workflow judges the report. Seeding or
+# installing failing does fail it.
+- name: Deploy to production on k3s with a monitored rollout
+  hosts: vcl
+  become: true
+  gather_facts: false
+  module_defaults:
+    ansible.builtin.apt:
+      lock_timeout: 900
+  vars:
+    mode: deploy
+    image: ""
+    version: ""
+    seed_image: ""
+    seed_version: ""
+    break_model: false
+    k3s_version: v1.31.4+k3s1
+    k3s_bin: /usr/local/bin/k3s
+    kubectl: [k3s, kubectl, -n, prod]
+    work: /opt/serve
+    manifest: "{{ work }}/serve.yaml"
+  tasks:
+    - name: Check the arguments
+      ansible.builtin.assert:
+        that:
+          - mode in ['deploy', 'undo']
+          - mode == 'undo' or (break_model | bool) or (image and version)
+          - report_dir is defined
+        fail_msg: "Pass mode=deploy with image and version (optional with break_model), or mode=undo; and report_dir."
+
+    - name: Wait for SSH (VCL opens the firewall shortly after the reservation is ready)
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+        sleep: 10
+
+    # -- the cluster ---------------------------------------------------------------------------------------------
+
+    - name: Check whether k3s is installed
+      ansible.builtin.stat:
+        path: "{{ k3s_bin }}"
+      register: k3s_installed
+
+    - name: Install k3s (single node, no ingress controller)
+      when: not k3s_installed.stat.exists
+      block:
+        - name: Download the k3s installer
+          ansible.builtin.get_url:
+            url: https://get.k3s.io
+            dest: /tmp/k3s-install.sh
+            mode: "0755"
+
+        - name: Run the k3s installer
+          ansible.builtin.command: /tmp/k3s-install.sh
+          environment:
+            INSTALL_K3S_VERSION: "{{ k3s_version }}"
+            INSTALL_K3S_EXEC: "--disable traefik --write-kubeconfig-mode 644"
+          changed_when: true
+
+    - name: Wait for the node to be Ready
+      ansible.builtin.command: k3s kubectl wait --for=condition=Ready node --all --timeout=60s
+      register: node_ready
+      until: node_ready.rc == 0
+      retries: 10
+      delay: 10
+      changed_when: false
+
+    - name: Make the work folder
+      ansible.builtin.file:
+        path: "{{ work }}"
+        state: directory
+        mode: "0755"
+
+    - name: Pull the images into containerd ({{ [image, seed_image] | select | unique | join(', ') }})
+      when: mode == 'deploy'
+      ansible.builtin.command:
+        argv: [k3s, crictl, pull, --creds, "{{ lookup('env', 'GHCR_USER') }}:{{ lookup('env', 'GHCR_TOKEN') }}", "{{ item }}"]
+      loop: "{{ [image, seed_image] | select | unique | list }}"
+      no_log: true  # the GHCR token is on the command line; it expires with the workflow run
+      changed_when: true
+
+    # -- what is serving now -------------------------------------------------------------------------------------
+
+    - name: Read the current deployment
+      ansible.builtin.command:
+        argv: "{{ kubectl + ['get', 'deployment', 'serve', '-o', 'json', '--ignore-not-found'] }}"
+      register: current_dep
+      changed_when: false
+
+    - name: Note the image and version serving now
+      ansible.builtin.set_fact:
+        live_image: "{{ (current_dep.stdout | from_json).spec.template.spec.containers[0].image if current_dep.stdout else '' }}"
+        live_version: >-
+          {{ ((current_dep.stdout | from_json).spec.template.spec.containers[0].env | default([])
+              | selectattr('name', 'equalto', 'MODEL_VERSION') | map(attribute='value') | list | first | default(''))
+             if current_dep.stdout else '' }}
+        seeded: false
+
+    # Leave image/version out of the extra vars (not empty) for this: extra vars can't be overridden.
+    - name: Break the release that is live (rollback drill with no image given)
+      when: break_model | bool and not image
+      block:
+        - name: Something must be live to break
+          ansible.builtin.assert:
+            that: live_image | length > 0
+            fail_msg: "Nothing is deployed. Run production-provision first."
+
+        - name: Use the live image and version
+          ansible.builtin.set_fact:
+            image: "{{ live_image }}"
+            version: "{{ live_version }}"
+
+    - name: Seed production (nothing deployed yet)
+      when: not live_image
+      block:
+        - name: Nothing to undo on a fresh cluster
+          ansible.builtin.assert:
+            that: mode == 'deploy'
+            fail_msg: "Nothing is deployed, so there is no earlier release to undo to."
+
+        - name: Render the manifest for the seed release
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/../k8s/serve.yaml.j2"
+            dest: "{{ manifest }}"
+            mode: "0644"
+          vars:
+            serve_image: "{{ seed_image or image }}"
+            serve_version: "{{ seed_version if seed_image else version }}"
+            serve_break: false
+
+        - name: Apply the seed release
+          ansible.builtin.command:
+            argv: [k3s, kubectl, apply, -f, "{{ manifest }}"]
+          changed_when: true
+
+        - name: Wait for the seed release
+          ansible.builtin.command:
+            argv: "{{ kubectl + ['rollout', 'status', 'deployment/serve', '--timeout=600s'] }}"
+          changed_when: false
+
+        - name: Note the seed release
+          ansible.builtin.set_fact:
+            live_image: "{{ seed_image or image }}"
+            live_version: "{{ seed_version if seed_image else version }}"
+            seeded: true
+
+    - name: Find the Service address
+      ansible.builtin.command:
+        argv: "{{ kubectl + ['get', 'service', 'serve', '-o', 'jsonpath={.spec.clusterIP}'] }}"
+      register: svc
+      changed_when: false
+
+    - name: Decide whether there is a rollout to measure
+      ansible.builtin.set_fact:
+        # The probe and the checks use the Service's cluster IP: from the node it goes through the same Service
+        # endpoints as outside traffic, and VCL's firewall doesn't get in the way.
+        service_url: "http://{{ svc.stdout }}:8000"
+        expect_version: "{{ version if mode == 'deploy' else '' }}"
+        rolled_back: false
+        fail_reason: ""
+        skip_reason: >-
+          {{ 'first production deploy: no earlier release to roll from' if (seeded and not seed_image)
+             else (('already serving ' ~ version ~ ' (' ~ image ~ ')')
+                   if (mode == 'deploy' and live_image == image and live_version == version and not (break_model | bool))
+                   else '') }}
+
+    - name: Copy the probe (also picks the revision to undo to)
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../scripts/probe.py"
+        dest: "{{ work }}/probe.py"
+        mode: "0755"
+
+    - name: Find the earlier release to undo to
+      when: mode == 'undo'
+      ansible.builtin.shell: "k3s kubectl -n prod get rs -l app=serve -o json | python3 {{ work }}/probe.py undo-target"
+      register: undo_target
+      changed_when: false
+      failed_when: undo_target.rc != 0
+      # Fails with "no earlier working release" when only one release has been deployed.
+
+    # -- the monitored rollout -----------------------------------------------------------------------------------
+
+    - name: Roll out under traffic
+      when: not skip_reason
+      block:
+        - name: Clear the last probe run
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop: ["{{ work }}/probe.stop", "{{ work }}/probe.json"]
+
+        - name: Start sending traffic (in the background)
+          ansible.builtin.command:
+            argv: [python3, "{{ work }}/probe.py", run, --url, "{{ service_url }}", --out, "{{ work }}/probe.json",
+                   --stop-file, "{{ work }}/probe.stop"]
+          async: 1800
+          poll: 0
+          register: probe_job
+          changed_when: false
+
+        - name: Let traffic run against the current release first
+          ansible.builtin.pause:
+            seconds: 5
+
+        - name: Render the manifest for the new release
+          when: mode == 'deploy'
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/../k8s/serve.yaml.j2"
+            dest: "{{ manifest }}"
+            mode: "0644"
+          vars:
+            serve_image: "{{ image }}"
+            serve_version: "{{ version }}"
+            serve_break: "{{ break_model | bool }}"
+
+        - name: Apply the new release
+          when: mode == 'deploy'
+          ansible.builtin.command:
+            argv: [k3s, kubectl, apply, -f, "{{ manifest }}"]
+          changed_when: true
+
+        - name: Undo to the previous release (revision {{ undo_target.stdout | default('') }})
+          when: mode == 'undo'
+          ansible.builtin.command:
+            argv: "{{ kubectl + ['rollout', 'undo', 'deployment/serve', '--to-revision=' ~ undo_target.stdout] }}"
+          changed_when: true
+
+        - name: Wait for the rollout (fails if new pods aren't Ready by the progress deadline)
+          ansible.builtin.command:
+            argv: "{{ kubectl + ['rollout', 'status', 'deployment/serve', '--timeout=600s'] }}"
+          register: rollout_status
+          failed_when: false
+          changed_when: false
+
+        - name: Check /health reports the new release
+          when: rollout_status.rc == 0
+          ansible.builtin.uri:
+            url: "{{ service_url }}/health"
+            return_content: true
+          register: health_after
+          until: >-
+            health_after.status == 200 and
+            (not expect_version or (health_after.json | default({})).version | default('') == expect_version)
+          retries: 15
+          delay: 2
+          failed_when: false
+
+        - name: Score a test post
+          when: rollout_status.rc == 0
+          ansible.builtin.uri:
+            url: "{{ service_url }}/predict"
+            method: POST
+            body_format: json
+            body:
+              posts:
+                - title: "I used to hate facial hair"
+                  body: "but then it grew on me."
+            return_content: true
+          register: predict_after
+          failed_when: false
+
+        - name: Judge the rollout
+          ansible.builtin.set_fact:
+            fail_reason: >-
+              {{ ('the new pods never became Ready: ' ~ (rollout_status.stderr_lines | default([''], true) | last))
+                   if rollout_status.rc != 0
+                 else (('/health answered ' ~ ((health_after.json | default({})).version | default('nothing')) ~
+                        ', expected ' ~ expect_version)
+                       if not (health_after.status | default(0) == 200 and
+                               (not expect_version or (health_after.json | default({})).version | default('') == expect_version))
+                       else ('/predict answered ' ~ (predict_after.status | default('nothing')))
+                             if not (predict_after.status | default(0) == 200 and
+                                     (predict_after.json | default({})).predictions | default([]) | length == 1)
+                             else '') }}
+
+        - name: Roll back automatically
+          when: fail_reason
+          block:
+            - name: Show why
+              ansible.builtin.debug:
+                msg: "Rolling back: {{ fail_reason }}"
+
+            - name: Find the release that was serving before
+              ansible.builtin.shell: "k3s kubectl -n prod get rs -l app=serve -o json | python3 {{ work }}/probe.py undo-target"
+              register: rollback_target
+              changed_when: false
+
+            - name: Undo the rollout
+              ansible.builtin.command:
+                argv: "{{ kubectl + ['rollout', 'undo', 'deployment/serve', '--to-revision=' ~ rollback_target.stdout] }}"
+              changed_when: true
+
+            - name: Wait for the previous release
+              ansible.builtin.command:
+                argv: "{{ kubectl + ['rollout', 'status', 'deployment/serve', '--timeout=600s'] }}"
+              changed_when: false
+
+            - name: Note the rollback
+              ansible.builtin.set_fact:
+                rolled_back: true
+
+        - name: Let traffic run against the final release
+          ansible.builtin.pause:
+            seconds: 10
+      always:
+        - name: Stop the probe
+          ansible.builtin.file:
+            path: "{{ work }}/probe.stop"
+            state: touch
+            mode: "0644"
+
+        - name: Wait for the probe to write its results
+          when: probe_job.ansible_job_id is defined
+          ansible.builtin.async_status:
+            jid: "{{ probe_job.ansible_job_id }}"
+          register: probe_done
+          until: probe_done.finished
+          retries: 30
+          delay: 2
+
+        - name: Copy the probe results back
+          when: probe_job.ansible_job_id is defined
+          ansible.builtin.fetch:
+            src: "{{ work }}/probe.json"
+            dest: "{{ report_dir }}/probe.json"
+            flat: true
+            fail_on_missing: false  # scripts/probe.py report fails the run if a measured rollout has no results
+
+    # -- the record ----------------------------------------------------------------------------------------------
+
+    - name: Read the final deployment
+      ansible.builtin.command:
+        argv: "{{ kubectl + ['get', 'deployment', 'serve', '-o', 'json'] }}"
+      register: final_dep
+      changed_when: false
+
+    - name: Read the rollout history and pods
+      ansible.builtin.shell: "k3s kubectl -n prod rollout history deployment/serve; k3s kubectl -n prod get pods -o wide"
+      register: cluster_state
+      changed_when: false
+
+    - name: Write rollout.json on the controller
+      delegate_to: localhost
+      become: false
+      vars:
+        final_container: "{{ (final_dep.stdout | from_json).spec.template.spec.containers[0] }}"
+        final_version: >-
+          {{ final_container.env | default([]) | selectattr('name', 'equalto', 'MODEL_VERSION')
+             | map(attribute='value') | list | first | default('') }}
+      ansible.builtin.copy:
+        dest: "{{ report_dir }}/rollout.json"
+        mode: "0644"
+        content: >-
+          {{ {'mode': mode, 'from': live_image, 'from_version': live_version,
+              'to': image if mode == 'deploy' else final_container.image,
+              'to_version': version if mode == 'deploy' else final_version,
+              'final_image': final_container.image, 'final_version': final_version,
+              'seeded': seeded, 'break_model': break_model | bool,
+              'measured': not skip_reason, 'rolled_back': rolled_back,
+              'reason': fail_reason or skip_reason, 'service_url': service_url,
+              'cluster': cluster_state.stdout} | to_nice_json }}
+
+    - name: Show the result
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'Rolled back: ' ~ fail_reason if rolled_back
+             else ('Nothing to measure: ' ~ skip_reason if skip_reason
+                   else 'Serving ' ~ (version or 'the previous release') ~ ' at ' ~ service_url) }}

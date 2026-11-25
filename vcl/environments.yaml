@@ -35,3 +35,12 @@ environments:
     image: "Ubuntu 22.04 - 16 cores 128 GB RAM"
     length_minutes: 240
     wait_timeout_minutes: 30
+
+  cpu-production:
+    description: CPU instance (16 cores, 128 GB RAM) running k3s for production; deploy-production.yml reserves it
+    # Same image as staging. Production is reused while its reservation is live and replaced when it has ended.
+    # Student accounts cap reservations at 10 h, so reserve a demo instance (production-provision.yml) less than
+    # 10 h ahead, or extend it with `python -m vcl extend <minutes> <request id>`.
+    image: "Ubuntu 22.04 - 16 cores 128 GB RAM"
+    length_minutes: 600
+    wait_timeout_minutes: 30
