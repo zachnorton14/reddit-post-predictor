@@ -1,0 +1,90 @@
+# Production inference on Kubernetes (k3s on one VCL CPU instance): pipeline/serve.py behind a NodePort.
+#
+# infra/ansible/production.yml renders this with Ansible's template module and applies it with `kubectl apply -f`.
+# It's a template, not plain YAML plus `kubectl set image`, so re-applying it can never reset the image.
+# Variables: serve_image, serve_version, and optional replicas (3), node_port (30080), progress_deadline (180 s),
+# serve_break (false; rollback-drill.yml sets it to simulate a release whose model does not load).
+#
+# Zero downtime during a rollout comes from four settings working together:
+#   maxUnavailable: 0   an old pod stops only after a new one is Ready, so capacity never drops
+#   readinessProbe      the Service sends traffic only to pods whose model has loaded (/health answers)
+#   preStop sleep       a stopping pod keeps serving while the Service removes it from its endpoints
+#   progressDeadline    a rollout whose new pods never become Ready is declared failed, so it can be rolled back
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prod
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: serve
+  namespace: prod
+  labels: {app: serve}
+  annotations:
+    # Shown by `kubectl rollout history`, so the history lists model versions.
+    kubernetes.io/change-cause: "{{ serve_version }}{{ ' (rollback drill: model does not load)' if serve_break | default(false) | bool else '' }}"
+spec:
+  replicas: {{ replicas | default(3) }}
+  revisionHistoryLimit: 10
+  minReadySeconds: 5
+  progressDeadlineSeconds: {{ progress_deadline | default(180) }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels: {app: serve}
+  template:
+    metadata:
+      labels: {app: serve}
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: serve
+          image: "{{ serve_image }}"
+          # The images are pulled into containerd by the playbook with a short-lived GHCR token, so the cluster never
+          # stores a registry credential. IfNotPresent also keeps `rollout undo` working offline.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: http, containerPort: 8000}
+          env:
+            # The image was built for staging with MODEL_VERSION=rc-<n>; in production /health and /predict report
+            # the production version instead, so the probe can tell which release answered each request.
+            - {name: MODEL_VERSION, value: "{{ serve_version }}"}
+{% if serve_break | default(false) | bool %}
+            # Rollback drill: point the server at a folder with no model. It exits at start and never becomes Ready.
+            - {name: MODEL_DIR, value: /model-missing}
+{% endif %}
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits: {memory: 4Gi}
+          startupProbe:  # the model loads at start; allow up to 2 minutes before liveness applies
+            httpGet: {path: /health, port: http}
+            periodSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec: {command: ["sleep", "10"]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: serve
+  namespace: prod
+spec:
+  type: NodePort
+  selector: {app: serve}
+  ports:
+    - {name: http, port: 8000, targetPort: http, nodePort: {{ node_port | default(30080) }}}

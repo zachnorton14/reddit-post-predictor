@@ -1,0 +1,43 @@
+# Rollback drill on the live production cluster, under nonstop traffic. Manual only; needs a live production
+# instance (production-provision.yml or a production deploy), and reserves nothing.
+#
+#   broken-release     deploy the live image with no model (infra/k8s/serve.yaml.j2 `serve_break`). The new pods
+#                      never become Ready, the rollout passes its progress deadline, and the playbook rolls back on
+#                      its own. Passes only if it was rolled back, no request failed, and the old version still answers.
+#   undo-last-release  `kubectl rollout undo` back to the previous release while traffic flows. Passes only if no
+#                      request failed and the previous version answers at the end. Needs two releases in the history.
+#
+# Neither promotes, tags or publishes anything. The report is in the run summary and the `production-report` artifact.
+# After undo-last-release, production serves the previous release until the next deploy.
+name: rollback-drill
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: What to simulate
+        type: choice
+        options: [broken-release, undo-last-release]
+        default: broken-release
+
+permissions:
+  contents: read
+  packages: read
+  actions: read
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  drill:
+    uses: ./.github/workflows/production-rollout.yml
+    permissions:
+      contents: read
+      packages: read
+    secrets: inherit
+    with:
+      mode: ${{ inputs.scenario == 'undo-last-release' && 'undo' || 'deploy' }}
+      break_model: ${{ inputs.scenario == 'broken-release' }}
+      expect: ${{ inputs.scenario == 'broken-release' && 'rollback' || 'rollout' }}
+      reserve: false

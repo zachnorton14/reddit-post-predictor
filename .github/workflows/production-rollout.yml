@@ -1,0 +1,218 @@
+# One monitored change to production on Kubernetes. Called by deploy-production.yml, production-provision.yml and
+# rollback-drill.yml; not run on its own.
+#
+# On the self-hosted controller (VCL opens an instance's firewall only to the IP that asked for it):
+#   1. Reuse the live production reservation (scripts/vcl_staging.py live --role production), or, when `reserve` is
+#      true, reserve a new `cpu-production` instance. A new one is in the cleanup ledger until it serves.
+#   2. Run infra/ansible/production.yml: k3s if needed, seed with `seed_image` on a fresh cluster, then the rollout
+#      (or undo) under nonstop traffic from scripts/probe.py, with an automatic rollback if it fails.
+#   3. Record whatever is serving at the end as production, even after a rollback: it's a release that worked.
+#   4. Judge the traffic report (scripts/probe.py report --expect ...). Any failed request fails the job.
+# A new reservation is ended only if the playbook itself failed (nothing usable is serving on it).
+name: production-rollout
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: deploy, or undo (back to the previous release)
+        type: string
+        default: deploy
+      image:
+        description: serve image to deploy (empty with break_model breaks the live release)
+        type: string
+        default: ""
+      version:
+        description: production version it serves as, e.g. model-4
+        type: string
+        default: ""
+      seed_image:
+        description: what production served before (the champion), for a fresh cluster
+        type: string
+        default: ""
+      seed_version:
+        type: string
+        default: ""
+      break_model:
+        description: deploy with no model so the rollout fails (rollback drill)
+        type: boolean
+        default: false
+      expect:
+        description: rollout (the change must land) or rollback (it must be rolled back automatically)
+        type: string
+        default: rollout
+      reserve:
+        description: reserve a new instance when no production is live
+        type: boolean
+        default: true
+    outputs:
+      final_version:
+        value: ${{ jobs.rollout.outputs.final_version }}
+      final_image:
+        value: ${{ jobs.rollout.outputs.final_image }}
+
+jobs:
+  rollout:
+    runs-on: [self-hosted, Linux]
+    environment: production
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      final_version: ${{ steps.final.outputs.version }}
+      final_image: ${{ steps.final.outputs.image }}
+    env:
+      VCL_TOKEN: ${{ secrets.VCL_TOKEN }}
+      # k3s pulls the images into containerd with this token during the job; the cluster never stores it.
+      GHCR_USER: ${{ github.actor }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ANSIBLE_HOST_KEY_CHECKING: "False"
+      MODE: ${{ inputs.mode }}
+      IMAGE: ${{ inputs.image }}
+      VERSION: ${{ inputs.version }}
+      SEED_IMAGE: ${{ inputs.seed_image }}
+      SEED_VERSION: ${{ inputs.seed_version }}
+      BREAK_MODEL: ${{ inputs.break_model }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up tools
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -q -r vcl/requirements.txt ansible-core
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Find the live production instance, or reserve one
+        id: vcl
+        env:
+          RESERVE: ${{ inputs.reserve }}
+        run: |
+          live=$(python scripts/vcl_staging.py live --role production --json)
+          if [ -n "$live" ]; then
+            id=$(python -c "import json,sys; print(json.loads(sys.argv[1])['request_id'])" "$live")
+            echo "Production is live: VCL request $id. Rolling onto it." >> "$GITHUB_STEP_SUMMARY"
+            # Writes the inventory and opens the instance's firewall to this controller again.
+            python -m vcl connect "$id" --inventory vcl_inventory.ini
+            # The record's request id, ip, user and port, so `record` below can rewrite it after the rollout.
+            printf '%s\n' "$live" > .vcl_state.json
+            echo "cold=false" >> "$GITHUB_OUTPUT"
+          elif [ "$RESERVE" = "true" ]; then
+            echo "No production is live: reserving a cpu-production instance (cold start)." >> "$GITHUB_STEP_SUMMARY"
+            python -m vcl up cpu-production --inventory vcl_inventory.ini
+            # Until it serves, the cleanup sweep ends it if this job dies.
+            python scripts/vcl_ledger.py add
+            echo "cold=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::No production instance is live. Run the production-provision workflow first."
+            exit 1
+          fi
+          python - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json
+          s = json.load(open(".vcl_state.json"))
+          print(f"request_id={s['request_id']}\nip={s.get('ip')}\nuser={s.get('user')}\nport={s.get('port')}")
+          EOF
+
+      - name: Write the SSH key
+        env:
+          VCL_SSH_KEY: ${{ secrets.VCL_SSH_KEY }}
+        run: |
+          key="$RUNNER_TEMP/vcl_key" && printf '%s\n' "$VCL_SSH_KEY" > "$key" && chmod 600 "$key"
+          echo "KEY=$key" >> "$GITHUB_ENV"
+
+      - name: Deploy under traffic (infra/ansible/production.yml)
+        id: playbook
+        run: |
+          mkdir -p report
+          # Only the vars that are set: extra vars can't be overridden by the playbook, so an empty image would stick.
+          python - <<'EOF'
+          import json, os
+          v = {"mode": os.environ["MODE"], "report_dir": os.path.abspath("report"),
+               "break_model": os.environ["BREAK_MODEL"] == "true"}
+          for key in ("image", "version", "seed_image", "seed_version"):
+              if os.environ.get(key.upper()):
+                  v[key] = os.environ[key.upper()]
+          json.dump(v, open("vars.json", "w"))
+          print(json.dumps(v, indent=2))
+          EOF
+          ansible-playbook -i vcl_inventory.ini --private-key "$KEY" infra/ansible/production.yml -e @vars.json
+
+      - name: Note what is serving
+        id: final
+        if: steps.playbook.outcome == 'success'
+        run: |
+          python - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json
+          r = json.load(open("report/rollout.json"))
+          print(f"image={r['final_image']}\nversion={r['final_version']}\nservice_url={r['service_url']}")
+          EOF
+
+      # Whatever serves now worked (a rollback leaves the previous release), so it is production.
+      - name: Record it as production
+        if: steps.playbook.outcome == 'success'
+        env:
+          FINAL_IMAGE: ${{ steps.final.outputs.image }}
+          FINAL_VERSION: ${{ steps.final.outputs.version }}
+          COLD: ${{ steps.vcl.outputs.cold }}
+          REQUEST_ID: ${{ steps.vcl.outputs.request_id }}
+        run: |
+          python scripts/vcl_staging.py record "$FINAL_IMAGE" "$FINAL_VERSION" --role production
+          if [ "$COLD" = "true" ]; then python scripts/vcl_ledger.py remove "$REQUEST_ID"; fi
+          rm -f .vcl_state.json
+
+      - name: Judge the traffic report
+        if: steps.playbook.outcome == 'success'
+        env:
+          EXPECT: ${{ inputs.expect }}
+        run: |
+          set +e
+          python scripts/probe.py report report/probe.json report/rollout.json --expect "$EXPECT" --out report/report.md
+          status=$?
+          cat report/report.md >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      - name: End the new reservation if nothing is serving on it
+        if: failure() && steps.vcl.outputs.cold == 'true' && steps.playbook.outcome != 'success'
+        env:
+          REQUEST_ID: ${{ steps.vcl.outputs.request_id }}
+        run: |
+          python -m vcl down "$REQUEST_ID" && python scripts/vcl_ledger.py remove "$REQUEST_ID"
+
+      - name: Clean up
+        if: always()
+        run: rm -f vcl_inventory.ini .vcl_state.json vars.json "$KEY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: production-report
+          path: report/
+          if-no-files-found: ignore
+          retention-days: 90
+
+      - name: How to reach production
+        if: steps.playbook.outcome == 'success'
+        env:
+          IP: ${{ steps.vcl.outputs.ip }}
+          SSH_USER: ${{ steps.vcl.outputs.user }}
+          SSH_PORT: ${{ steps.vcl.outputs.port }}
+          SERVICE_URL: ${{ steps.final.outputs.service_url }}
+          FINAL_VERSION: ${{ steps.final.outputs.version }}
+        run: |
+          target=${SERVICE_URL#http://}
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+
+          ### Production: \`$FINAL_VERSION\`
+
+          k3s on VCL \`cpu-production\` at \`$IP\` (Service \`$target\`). It serves until the reservation ends; the next
+          deploy rolls onto it while it is live. Only the controller can reach the instance, so tunnel through it:
+
+          \`\`\`sh
+          ssh -J <you>@<controller> -p $SSH_PORT -L 8000:$target $SSH_USER@$IP
+          curl localhost:8000/health
+          # on the instance: k3s kubectl -n prod get pods; k3s kubectl -n prod rollout history deployment/serve
+          \`\`\`
+          EOF

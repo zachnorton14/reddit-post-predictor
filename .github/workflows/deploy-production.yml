@@ -1,0 +1,149 @@
+# Deploy the staged release to production on Kubernetes when `release` merges into `main`, then make it the champion.
+#
+#   resolve (hosted) ──► rollout (production-rollout.yml, self-hosted controller) ──► record (hosted)
+#
+# Nothing is rebuilt. deploy.yml built `serve:sha-<release commit>`, served it on staging and published the
+# pre-release `rc-<n>` (with release.json) at that commit. This finds that rc from the merged pull request's head,
+# rolls its image out to the k3s cluster on the production VCL instance under nonstop traffic, and only if no request
+# failed and the rollout wasn't rolled back:
+#   - tags the image serve:model-<n> and serve:production (the same bytes staging tested),
+#   - promotes the model on Hugging Face (scripts/hf_models.py promote: release.json next to the weights, tag
+#     model-<n>, champion.json),
+#   - publishes the GitHub release model-<n> with release.json and the traffic report.
+#
+# A fresh production instance is seeded with the current champion (the latest model-<n>) first, so the new release
+# still arrives as a monitored rolling update. See docs/pipeline.md "Production".
+name: deploy-production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+  actions: read
+
+# Shared with production-provision and rollback-drill: one change to production at a time.
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}/serve
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      rc: ${{ steps.staged.outputs.rc }}
+      image: ${{ steps.staged.outputs.image }}
+      version: ${{ steps.version.outputs.version }}
+      seed_image: ${{ steps.seed.outputs.image }}
+      seed_version: ${{ steps.seed.outputs.version }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # the rc-<n> and model-<n> tags
+      - name: Find the release candidate staged at the merged release commit
+        id: staged
+        run: |
+          head=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].head.sha // empty')
+          [ -n "$head" ] || { echo "::error::${{ github.sha }} did not come from a pull request (merge release into main)"; exit 1; }
+          rc=$(git tag --points-at "$head" --list 'rc-*' | sort -t- -k2 -n | tail -1)
+          [ -n "$rc" ] || { echo "::error::${head:0:7} was never staged: no rc-<n> tag at it. Merge release into main only after deploy succeeded."; exit 1; }
+          gh release download "$rc" --pattern release.json --dir release
+          image=$(python3 -c "import json; print(json.load(open('release/release.json'))['serve_image'])")
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "Deploying \`$rc\` (\`$image\`), staged at ${head:0:7}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Pick the production version
+        id: version
+        run: echo "version=$(python3 scripts/release_version.py next model '${{ github.sha }}')" >> "$GITHUB_OUTPUT"
+      - name: Find the current champion (seeds a fresh production instance)
+        id: seed
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          champ=$(python3 scripts/release_version.py latest model)
+          if [ -n "$champ" ] && [ "$champ" != "$VERSION" ]; then
+            gh release download "$champ" --pattern release.json --dir seed
+            echo "image=$(python3 -c "import json; print(json.load(open('seed/release.json'))['serve_image'])")" >> "$GITHUB_OUTPUT"
+            echo "version=$champ" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: release/
+          retention-days: 90
+
+  rollout:
+    needs: resolve
+    uses: ./.github/workflows/production-rollout.yml
+    permissions:
+      contents: read
+      packages: read
+    secrets: inherit
+    with:
+      image: ${{ needs.resolve.outputs.image }}
+      version: ${{ needs.resolve.outputs.version }}
+      seed_image: ${{ needs.resolve.outputs.seed_image }}
+      seed_version: ${{ needs.resolve.outputs.seed_version }}
+      expect: rollout
+
+  record:
+    needs: [resolve, rollout]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+      SOURCE: ${{ needs.resolve.outputs.image }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+      - uses: actions/download-artifact@v4
+        with:
+          name: production-report
+          path: report
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Tag the image that is serving as model-<n> and production (no rebuild)
+        run: docker buildx imagetools create -t "${IMAGE,,}:$VERSION" -t "${IMAGE,,}:production" "$SOURCE"
+      - name: Add the production release to release.json
+        env:
+          RC: ${{ needs.resolve.outputs.rc }}
+        run: |
+          python3 - <<'EOF'
+          import json, os
+          from pathlib import Path
+          path = Path("release/release.json")
+          release = json.loads(path.read_text())
+          release.update(model=os.environ["VERSION"], production_commit=os.environ["GITHUB_SHA"], staged_as=os.environ["RC"])
+          path.write_text(json.dumps(release, indent=2) + "\n")
+          EOF
+      - name: Promote it to champion on Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pip install -q pyyaml "huggingface_hub>=0.25"
+          python scripts/hf_models.py promote release/release.json "$VERSION"
+      - name: Publish the model release
+        run: |
+          if gh release view "$VERSION" > /dev/null 2>&1; then
+            # A re-run of this deploy: same commit, same version (scripts/release_version.py).
+            gh release upload "$VERSION" release/release.json report/report.md --clobber
+          else
+            gh release create "$VERSION" release/release.json report/report.md \
+              --target "$GITHUB_SHA" --latest --title "$VERSION" \
+              --notes "In production on Kubernetes (VCL). Image: \`$SOURCE\`"$'\n\n'"$(cat report/report.md)"
+          fi

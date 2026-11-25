@@ -1,0 +1,58 @@
+# Bring production up ahead of time (before a demo), serving the current champion, so it looks like it has been
+# running. Manual only.
+#
+# Reserves a `cpu-production` VCL instance if no production is live (or reuses the live one), installs k3s and deploys
+# the latest model-<n> image (the champion). With no model-<n> yet it serves the latest staged rc-<n> instead. It
+# promotes nothing and publishes nothing. Reservations last up to 10 hours (the student cap), so run it less than 10
+# hours before the demo, or extend it: `python -m vcl extend <minutes> <request id>` on the controller.
+#
+# After this, a merge into main rolls the new release onto this instance (deploy-production.yml), and
+# rollback-drill.yml can show an automatic rollback on it.
+name: production-provision
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+  actions: read
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.champion.outputs.image }}
+      version: ${{ steps.champion.outputs.version }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Find the champion (else the latest release candidate)
+        id: champion
+        run: |
+          version=$(python3 scripts/release_version.py latest model)
+          [ -n "$version" ] || version=$(python3 scripts/release_version.py latest rc)
+          [ -n "$version" ] || { echo "::error::Nothing has been released yet (no model-<n> or rc-<n>)."; exit 1; }
+          gh release download "$version" --pattern release.json --dir release
+          echo "image=$(python3 -c "import json; print(json.load(open('release/release.json'))['serve_image'])")" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Provisioning production with \`$version\`" >> "$GITHUB_STEP_SUMMARY"
+
+  rollout:
+    needs: resolve
+    uses: ./.github/workflows/production-rollout.yml
+    permissions:
+      contents: read
+      packages: read
+    secrets: inherit
+    with:
+      image: ${{ needs.resolve.outputs.image }}
+      version: ${{ needs.resolve.outputs.version }}
+      expect: rollout

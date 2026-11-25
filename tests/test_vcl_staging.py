@@ -46,3 +46,23 @@ def test_staging_is_not_in_the_ledger(state):
 
 def test_bad_arguments():
     assert staging.main(["record", "img"]) == 2
+    assert staging.main(["current", "--role", "prod"]) == 2
+
+
+def test_production_has_its_own_record(state, capsys):
+    staging.record("img-staging", "rc-3", state)
+    state.write_text(json.dumps({"request_id": 900, "ip": "10.0.0.9"}))
+    staging.record("img-prod", "model-2", state, role="production")
+    assert staging.current()["request_id"] == 555
+    assert staging.current("production")["version"] == "model-2"
+    staging.main(["current", "--role", "production"])
+    assert capsys.readouterr().out == "900\n"
+    assert sorted(p.name for p in staging.record_path().parent.iterdir()) == ["production.json", "staging.json"]
+
+
+def test_live_only_when_vcl_says_ready(state):
+    assert staging.live("production", status=lambda _id: "ready") is None  # nothing recorded
+    staging.record("img", "model-1", state, role="production")
+    assert staging.live("production", status=lambda _id: "ready")["request_id"] == 555
+    assert staging.live("production", status=lambda _id: None) is None  # ended or expired
+    assert staging.live("production", status=lambda _id: "timedout") is None

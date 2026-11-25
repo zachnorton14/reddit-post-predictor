@@ -32,7 +32,7 @@ pip install -r requirements-ci.txt     # lint and tests only (what CI installs, 
 
 ## Branches and pull requests
 
-Flow: feature branch → `dev` → `release` (staging on VCL) → `main` (production, not built yet). `dev` is the default
+Flow: feature branch → `dev` → `release` (staging on VCL) → `main` (production, Kubernetes on VCL). `dev` is the default
 branch.
 
 - Branch from `origin/dev`. Name it `<your name>/<topic>`, for example `owen/deberta-pipeline`.
@@ -67,7 +67,10 @@ Nothing on the GPU. A model is trained once, in an experiment, and only scored a
    fails if `pr_auc` or `top10_hit_rate` drops more than 0.01 below that baseline's. It runs again on every push to `dev` while that PR is open, about 15–30 minutes each.
 4. **Staging** (merge into `release`): serves exactly the revision that was scored on a VCL CPU instance and
    publishes the pre-release `rc-<n>`. It doesn't make the model the champion.
-5. **Production** (merge into `main`, not built yet): will deploy the staged image to Kubernetes and promote it.
+5. **Production** (merge `release` into `main`): `deploy-production` rolls the staged image out to k3s on a VCL
+   instance under nonstop traffic, rolls back on its own if it fails, and only after zero failed requests publishes
+   `model-<n>` and promotes it as the champion. `production-provision` (demo prep) and `rollback-drill` are manual.
+   Running either changes production, so ask the repo owner first.
 
 `train-eval` (retrain `pipeline/train.py`'s model) is manual only. Use it to retrain that model, for example on new
 data.

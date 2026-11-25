@@ -5,10 +5,10 @@
 # it into an inference image, serves it on the VCL staging instance, and publishes a GitHub pre-release `rc-<n>`
 # with release.json attached.
 #
-# Staging does not make the model the champion. A push to `main` will deploy the same image (`serve:sha-<commit>`)
-# to production, publish `model-<n>` and promote it on Hugging Face (`scripts/hf_models.py promote`). That production
-# workflow is not built yet. release-check gates the next release against the latest rc-<n>, using the release.json
-# attached here.
+# Staging does not make the model the champion. A push to `main` (deploy-production.yml) deploys the same image
+# (`serve:sha-<commit>`) to production on Kubernetes, publishes `model-<n>` and promotes it on Hugging Face
+# (`scripts/hf_models.py promote`), reading the release.json attached here. release-check gates the next release
+# against the latest rc-<n>, using that same release.json.
 #
 #   build (hosted) ──► deploy-staging (self-hosted controller, VCL CPU instance) ──► record (hosted)
 #
